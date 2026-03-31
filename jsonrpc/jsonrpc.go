@@ -1,4 +1,4 @@
-package srv
+package jsonrpc
 
 import (
 	"context"
@@ -7,9 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-
-	v1 "go.alis.build/common/alis/a2a/extension/scheduler/v1"
-	"go.alis.build/a2a/extension/scheduler/service"
 	"go.alis.build/alog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -17,6 +14,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+
+	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 )
 
 // JSON-RPC 2.0 protocol constants
@@ -29,8 +28,9 @@ const (
 	methodDeleteCron       = "DeleteCron"
 	methodListCrons        = "ListCrons"
 	methodRunCron          = "RunCron"
-	// SchedulerExtensionPath is the default HTTP path segment for mounting [NewJSONRPCHandler].
-	SchedulerExtensionPath = "/extensions/a2ascheduler"
+
+	// JSONRPC endpoint for serving A2A
+	SchedulerJsonRpcExtensionPath = "/alis.a2a.extension.v1.SchedulerService"
 )
 
 var (
@@ -64,7 +64,7 @@ type jsonrpcResponse struct {
 }
 
 type jsonrpcHandler struct {
-	service service.Service
+	service pb.SchedulerServiceServer
 	cors    *corsConfig
 }
 
@@ -183,57 +183,57 @@ func (h *jsonrpcHandler) handleRequest(ctx context.Context, rw http.ResponseWrit
 	}
 }
 
-func (h *jsonrpcHandler) onHandleCronCreate(ctx context.Context, raw json.RawMessage) (*v1.Cron, error) {
-	query := &v1.CreateCronRequest{}
+func (h *jsonrpcHandler) onHandleCronCreate(ctx context.Context, raw json.RawMessage) (*pb.Cron, error) {
+	query := &pb.CreateCronRequest{}
 	if err := jsonrpcUnmarshaler.Unmarshal(raw, query); err != nil {
 		return nil, ErrInvalidParams{err: err}
 	}
-	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: v1.SchedulerService_CreateCron_FullMethodName})
+	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: pb.SchedulerService_CreateCron_FullMethodName})
 	return h.service.CreateCron(ctx, query)
 }
 
-func (h *jsonrpcHandler) onHandleCronGet(ctx context.Context, raw json.RawMessage) (*v1.Cron, error) {
-	query := &v1.GetCronRequest{}
+func (h *jsonrpcHandler) onHandleCronGet(ctx context.Context, raw json.RawMessage) (*pb.Cron, error) {
+	query := &pb.GetCronRequest{}
 	if err := jsonrpcUnmarshaler.Unmarshal(raw, query); err != nil {
 		return nil, ErrInvalidParams{err: err}
 	}
-	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: v1.SchedulerService_GetCron_FullMethodName})
+	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: pb.SchedulerService_GetCron_FullMethodName})
 	return h.service.GetCron(ctx, query)
 }
 
-func (h *jsonrpcHandler) onHandleCronUpdate(ctx context.Context, raw json.RawMessage) (*v1.Cron, error) {
-	query := &v1.UpdateCronRequest{}
+func (h *jsonrpcHandler) onHandleCronUpdate(ctx context.Context, raw json.RawMessage) (*pb.Cron, error) {
+	query := &pb.UpdateCronRequest{}
 	if err := jsonrpcUnmarshaler.Unmarshal(raw, query); err != nil {
 		return nil, ErrInvalidParams{err: err}
 	}
-	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: v1.SchedulerService_UpdateCron_FullMethodName})
+	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: pb.SchedulerService_UpdateCron_FullMethodName})
 	return h.service.UpdateCron(ctx, query)
 }
 
 func (h *jsonrpcHandler) onHandleCronDelete(ctx context.Context, raw json.RawMessage) (proto.Message, error) {
-	query := &v1.DeleteCronRequest{}
+	query := &pb.DeleteCronRequest{}
 	if err := jsonrpcUnmarshaler.Unmarshal(raw, query); err != nil {
 		return nil, ErrInvalidParams{err: err}
 	}
-	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: v1.SchedulerService_DeleteCron_FullMethodName})
+	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: pb.SchedulerService_DeleteCron_FullMethodName})
 	return h.service.DeleteCron(ctx, query)
 }
 
-func (h *jsonrpcHandler) onHandleCronList(ctx context.Context, raw json.RawMessage) (*v1.ListCronsResponse, error) {
-	query := &v1.ListCronsRequest{}
+func (h *jsonrpcHandler) onHandleCronList(ctx context.Context, raw json.RawMessage) (*pb.ListCronsResponse, error) {
+	query := &pb.ListCronsRequest{}
 	if err := jsonrpcUnmarshaler.Unmarshal(raw, query); err != nil {
 		return nil, ErrInvalidParams{err: err}
 	}
-	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: v1.SchedulerService_ListCrons_FullMethodName})
+	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: pb.SchedulerService_ListCrons_FullMethodName})
 	return h.service.ListCrons(ctx, query)
 }
 
-func (h *jsonrpcHandler) onHandleCronRun(ctx context.Context, raw json.RawMessage) (*v1.RunCronResponse, error) {
-	query := &v1.RunCronRequest{}
+func (h *jsonrpcHandler) onHandleCronRun(ctx context.Context, raw json.RawMessage) (*pb.RunCronResponse, error) {
+	query := &pb.RunCronRequest{}
 	if err := jsonrpcUnmarshaler.Unmarshal(raw, query); err != nil {
 		return nil, ErrInvalidParams{err: err}
 	}
-	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: v1.SchedulerService_RunCron_FullMethodName})
+	ctx = grpc.NewContextWithServerTransportStream(ctx, &jsonrpcStream{method: pb.SchedulerService_RunCron_FullMethodName})
 	return h.service.RunCron(ctx, query)
 }
 
@@ -278,12 +278,12 @@ func (h *jsonrpcHandler) grpcToJSONRPCError(st *status.Status) JSONRPCError {
 }
 
 // NewJSONRPCHandler returns an [http.Handler] that implements JSON-RPC 2.0 for the history API
-// (ListThreads, GetThread, ListThreadEvents). The service must implement [service.Service].
+// (ListCrons, GetCron, UpdateCron, CreateCron, RunCron). The service must implement [service.Service].
 // Request params and response results are protobuf JSON (protojson): camelCase keys, unknown fields
 // ignored on input, unpopulated fields included on output. gRPC status errors from the service are
 // mapped to JSON-RPC errors. Pass [WithCORS] (and [CORSAllowOrigin] / [CORSAllowHeaders] / [CORSAllowMethods])
 // for browser clients.
-func NewJSONRPCHandler(service service.Service, opts ...JSONRPCHandlerOption) http.Handler {
+func NewJSONRPCHandler(service pb.SchedulerServiceServer, opts ...JSONRPCHandlerOption) http.Handler {
 	h := &jsonrpcHandler{service: service}
 	for _, o := range opts {
 		o(h)

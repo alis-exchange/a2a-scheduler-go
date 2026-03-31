@@ -17,7 +17,8 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"go.alis.build/validation"
-	"go.alis.build/common/alis/a2a/extension/scheduler/v1"
+
+	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 
 	cloudtasks "cloud.google.com/go/cloudtasks/apiv2"
 	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
@@ -29,8 +30,7 @@ import (
 const (
 	cronRegex        = `^crons/[a-z0-9-]{2,50}$`
 	roleOpen         = "roles/open"
-	roleCronViewer   = "roles/cron.viewer"
-	roleCronAdmin    = "roles/cron.admin"
+	roleCronOwner    = "roles/cron.owner"
 )
 
 // SpannerServiceConfig selects the Spanner database and table names used by [SpannerService].
@@ -48,16 +48,16 @@ type SpannerServiceConfig struct {
 	TargetUrl         string // Target URL for triggering crongs.
 }
 
-var _ Service = (*SpannerService)(nil)
+var _ pb.SchedulerServiceServer = (*SpannerService)(nil)
 
-// SpannerService is an implementation of [Service] for managing Crons via Google Cloud Spanner.
+// SpannerService is an implementation of [pb.SchedulerServiceServer] for managing Crons via Google Cloud Spanner.
 type SpannerService struct {
 	db             *spanner.Client
 	cloudTasks     *cloudtasks.Client
 	cloudScheduler *cloudscheduler.CloudSchedulerClient
 	authorizer     *iam.IAM
 	config         *SpannerServiceConfig
-	v1.UnimplementedSchedulerServiceServer
+	pb.UnimplementedSchedulerServiceServer
 }
 
 // NewSpannerService constructs a [SpannerService] with a Spanner client and IAM authorizer wired to
@@ -87,25 +87,18 @@ func NewSpannerService(ctx context.Context, config *SpannerServiceConfig) (*Span
 		{
 			Name: roleOpen,
 			Permissions: []string{
-				v1.SchedulerService_CreateCron_FullMethodName,
-				v1.SchedulerService_ListCrons_FullMethodName,
+				pb.SchedulerService_CreateCron_FullMethodName,
+				pb.SchedulerService_ListCrons_FullMethodName,
 			},
 			AllUsers: true,
 		},
 		{
-			Name: roleCronViewer,
+			Name: roleCronOwner,
 			Permissions: []string{
-				v1.SchedulerService_GetCron_FullMethodName,
-			},
-			AllUsers: false,
-		},
-		{
-			Name: roleCronAdmin,
-			Permissions: []string{
-				v1.SchedulerService_GetCron_FullMethodName,
-				v1.SchedulerService_UpdateCron_FullMethodName,
-				v1.SchedulerService_DeleteCron_FullMethodName,
-				v1.SchedulerService_RunCron_FullMethodName,
+				pb.SchedulerService_GetCron_FullMethodName,
+				pb.SchedulerService_UpdateCron_FullMethodName,
+				pb.SchedulerService_DeleteCron_FullMethodName,
+				pb.SchedulerService_RunCron_FullMethodName,
 			},
 			AllUsers: false,
 		},
@@ -124,7 +117,7 @@ func NewSpannerService(ctx context.Context, config *SpannerServiceConfig) (*Span
 }
 
 // CreateCron implements the [Service.CreateCron] method.
-func (s *SpannerService) CreateCron(ctx context.Context, req *v1.CreateCronRequest) (*v1.Cron, error) {
+func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronRequest) (*pb.Cron, error) {
 	// Authorize
 	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
 	if err != nil {
@@ -155,8 +148,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *v1.CreateCronReque
 	}
 
 	switch req.GetCron().GetType() {
-	case v1.Cron_TYPE_CRON:
-		// TODO: Consider also handling using Cloud Tasks over Cloud Scheduler
+	case pb.Cron_TYPE_CRON:
 		parent := fmt.Sprintf("projects/%s/locations/%s", s.config.SchedulingProject, s.config.SchedulingRegion)
 		jobReq := &schedulerpb.CreateJobRequest{
 			Parent: fmt.Sprintf("projects/%s/locations/%s", s.config.SchedulingProject, s.config.SchedulingRegion),
@@ -185,7 +177,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *v1.CreateCronReque
 		if _ ,err = s.cloudScheduler.CreateJob(ctx, jobReq); err != nil {
 			return nil, err
 		}
-	case v1.Cron_TYPE_AT:
+	case pb.Cron_TYPE_AT:
 		queueName := fmt.Sprintf("projects/%s/locations/%s/queues/%s", s.config.SchedulingProject, s.config.SchedulingRegion, s.config.SchedulingQueue)
 		taskName := fmt.Sprintf("%s/tasks/%s", queueName, cronID)
 		taskReq := &taskspb.CreateTaskRequest{
@@ -220,7 +212,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *v1.CreateCronReque
 	req.GetCron().UpdateTime = now
 
 	// Set owner and email from authorizer details
-	req.GetCron().Owner = az.Identity.PolicyMember()
+	req.GetCron().Owner = az.Identity.UserName()
 	req.GetCron().Email = az.Identity.Email()
 
 	// Insert new resource
@@ -228,7 +220,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *v1.CreateCronReque
 	policy := &iampb.Policy{
 		Bindings: []*iampb.Binding{
 			{
-				Role:    roleCronAdmin,
+				Role:    roleCronOwner,
 				Members: []string{az.Identity.PolicyMember()},
 			},
 		},
@@ -250,7 +242,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *v1.CreateCronReque
 }
 
 // UpdateCron implements the [Service.UpdateCron] method.
-func (s *SpannerService) UpdateCron(ctx context.Context, req *v1.UpdateCronRequest) (*v1.Cron, error) {
+func (s *SpannerService) UpdateCron(ctx context.Context, req *pb.UpdateCronRequest) (*pb.Cron, error) {
 	// Validation
 	validator := validation.NewValidator()
 	validator.MessageIsPopulated("cron", req.GetCron() != nil)
@@ -293,7 +285,7 @@ func (s *SpannerService) UpdateCron(ctx context.Context, req *v1.UpdateCronReque
 }
 
 // GetCron implements the [Service.GetCron] method.
-func (s *SpannerService) GetCron(ctx context.Context, req *v1.GetCronRequest) (*v1.Cron, error) {
+func (s *SpannerService) GetCron(ctx context.Context, req *pb.GetCronRequest) (*pb.Cron, error) {
 	// Authorize
 	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
 	if err != nil {
@@ -322,7 +314,7 @@ func (s *SpannerService) GetCron(ctx context.Context, req *v1.GetCronRequest) (*
 }
 
 // ListCrons implements the [Service.ListCrons] method.
-func (s *SpannerService) ListCrons(ctx context.Context, req *v1.ListCronsRequest) (*v1.ListCronsResponse, error) {
+func (s *SpannerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest) (*pb.ListCronsResponse, error) {
 	// Authorize
 	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
 	if err != nil {
@@ -363,10 +355,10 @@ func (s *SpannerService) ListCrons(ctx context.Context, req *v1.ListCronsRequest
 	statement.Params["offset"] = offset
 
 	// make db hit and build up results
-	var resources []*v1.Cron
+	var resources []*pb.Cron
 	iterator := s.db.ReadOnlyTransaction().Query(ctx, statement)
 	if err := iterator.Do(func(r *spanner.Row) error {
-		history := &v1.Cron{}
+		history := &pb.Cron{}
 		if err := r.Columns(history); err != nil {
 			return err
 		}
@@ -382,14 +374,14 @@ func (s *SpannerService) ListCrons(ctx context.Context, req *v1.ListCronsRequest
 		nextPageToken = fmt.Sprintf("%d", offset+limit)
 	}
 
-	return &v1.ListCronsResponse{
+	return &pb.ListCronsResponse{
 		Crons:       resources,
 		NextPageToken: nextPageToken,
 	}, nil
 }
 
 // DeleteCron implements the [Service.DeleteCron] method.
-func (s *SpannerService) DeleteCron(ctx context.Context, req *v1.DeleteCronRequest) (*emptypb.Empty, error) {
+func (s *SpannerService) DeleteCron(ctx context.Context, req *pb.DeleteCronRequest) (*emptypb.Empty, error) {
 	// Validation
 	validator := validation.NewValidator()
 	validator.String("name", req.GetName()).IsPopulated().Matches(cronRegex)
@@ -414,14 +406,14 @@ func (s *SpannerService) DeleteCron(ctx context.Context, req *v1.DeleteCronReque
 	// Delete scheduler instances
 	cronID := strings.Split(req.GetName(), "/")[1]
 	switch cron.GetType() {
-	case v1.Cron_TYPE_CRON:
+	case pb.Cron_TYPE_CRON:
 		if err = s.cloudScheduler.DeleteJob(ctx, &schedulerpb.DeleteJobRequest{
 			Name: fmt.Sprintf("projects/%s/locations/%s/jobs/%s", 
-				s.config.SchedulingProject, "europe-west1", cronID),
+				s.config.SchedulingProject, s.config.SchedulingRegion, cronID),
 		}); err != nil {
 			return nil, err
 		}
-	case v1.Cron_TYPE_AT:
+	case pb.Cron_TYPE_AT:
 		if err = s.cloudTasks.DeleteTask(ctx, &taskspb.DeleteTaskRequest{
 			Name: fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", 
 				s.config.SchedulingProject, s.config.SchedulingRegion, s.config.SchedulingQueue, cronID),
@@ -439,7 +431,7 @@ func (s *SpannerService) DeleteCron(ctx context.Context, req *v1.DeleteCronReque
 }
 
 // RunCron implements the [Service.RunCron] method.
-func (s *SpannerService) RunCron(ctx context.Context, req *v1.RunCronRequest) (*v1.RunCronResponse, error) {
+func (s *SpannerService) RunCron(ctx context.Context, req *pb.RunCronRequest) (*pb.RunCronResponse, error) {
 	// Validation
 	validator := validation.NewValidator()
 	validator.String("id", req.GetId()).IsPopulated()
@@ -463,14 +455,14 @@ func (s *SpannerService) RunCron(ctx context.Context, req *v1.RunCronRequest) (*
 	}
 
 	switch cron.GetType() {
-	case v1.Cron_TYPE_CRON:
+	case pb.Cron_TYPE_CRON:
 		if _, err := s.cloudScheduler.RunJob(ctx, &schedulerpb.RunJobRequest{
 			Name: fmt.Sprintf("projects/%s/locations/%s/jobs/%s", 
 				s.config.SchedulingProject, s.config.SchedulingRegion, req.GetId()),
 		}); err != nil {
 			return nil, err
 		}
-	case v1.Cron_TYPE_AT:
+	case pb.Cron_TYPE_AT:
 		if _, err := s.cloudTasks.RunTask(ctx, &taskspb.RunTaskRequest{
 			Name: fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", 
 				s.config.SchedulingProject, s.config.SchedulingRegion, s.config.SchedulingQueue, req.GetId()),
@@ -478,17 +470,17 @@ func (s *SpannerService) RunCron(ctx context.Context, req *v1.RunCronRequest) (*
 			return nil, err
 		}
 	}
-	return &v1.RunCronResponse{}, nil
+	return &pb.RunCronResponse{}, nil
 }
 
 // readCron loads the Cron and Policy columns for a cron primary key, or returns the Spanner error
 // (typically NotFound if the row does not exist).
-func (s *SpannerService) readCron(ctx context.Context, name string) (*v1.Cron, *iampb.Policy, error) {
+func (s *SpannerService) readCron(ctx context.Context, name string) (*pb.Cron, *iampb.Policy, error) {
 	row, err := s.db.Single().ReadRow(ctx, s.config.CronTable, spanner.Key{name}, []string{"Cron", "Policy"})
 	if err != nil {
 		return nil, nil, err
 	}
-	cron := &v1.Cron{}
+	cron := &pb.Cron{}
 	policy := &iampb.Policy{}
 
 	if err := row.Columns(cron, policy); err != nil {
