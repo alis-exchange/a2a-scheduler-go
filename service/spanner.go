@@ -219,6 +219,10 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *v1.CreateCronReque
 	req.GetCron().CreateTime = now
 	req.GetCron().UpdateTime = now
 
+	// Set owner and email from authorizer details
+	req.GetCron().Owner = az.Identity.PolicyMember()
+	req.GetCron().Email = az.Identity.Email()
+
 	// Insert new resource
 	var mutations []*spanner.Mutation
 	policy := &iampb.Policy{
