@@ -68,7 +68,7 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 		return err
 	}
 
-	resp, err := client.SendMessage(ctx, &a2a.SendMessageRequest{
+	_, err = client.SendMessage(ctx, &a2a.SendMessageRequest{
 		Message: a2a.NewMessage(
 			a2a.MessageRoleUser, 
 			a2a.NewTextPart(prompt),
@@ -77,10 +77,7 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 	if err != nil {
 		return err
 	}
-	_, err = json.Marshal(resp)
-	if err != nil {
-		return err
-	}
+	alog.Info(ctx, "Agent invocation completed")
 
 	return nil
 }
