@@ -10,7 +10,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
-	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v0"
+	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
 	"github.com/golang-jwt/jwt/v5"
 	"go.alis.build/alog"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"

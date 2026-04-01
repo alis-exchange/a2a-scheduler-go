@@ -6,18 +6,19 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
 	"cloud.google.com/go/iam/apiv1/iampb"
 	"cloud.google.com/go/spanner"
-	"github.com/alis-exchange/go-alis-build/iam/v2"
 	"github.com/google/uuid"
 	"github.com/mennanov/fmutils"
+	"go.alis.build/iam/v2"
+	"go.alis.build/validation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"go.alis.build/validation"
 
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 
@@ -29,9 +30,9 @@ import (
 )
 
 const (
-	cronRegex        = `^crons/[a-z0-9-]{2,50}$`
-	roleOpen         = "roles/open"
-	roleCronOwner    = "roles/cron.owner"
+	cronRegex     = `^crons/[a-z0-9-]{2,50}$`
+	roleOpen      = "roles/open"
+	roleCronOwner = "roles/cron.owner"
 )
 
 // SpannerServiceConfig selects the Spanner database and table names used by [SpannerService].
@@ -115,7 +116,7 @@ func NewSpannerService(ctx context.Context, config *SpannerServiceConfig) (*Span
 
 	return &SpannerService{
 		db:             db,
-		cloudScheduler: cloudScheduler, 
+		cloudScheduler: cloudScheduler,
 		cloudTasks:     cloudTasks,
 		config:         config,
 		authorizer:     authorizer,
@@ -153,7 +154,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 	cronID := uuid.NewString()
 
 	type InvocationRequest struct {
-		CronID string `json:"id"`  // Cron job ID reference
+		CronID string `json:"id"` // Cron job ID reference
 	}
 
 	body := InvocationRequest{CronID: cronID}
@@ -171,9 +172,9 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 				Name: fmt.Sprintf("%s/jobs/%s", parent, cronID),
 				Target: &schedulerpb.Job_HttpTarget{
 					HttpTarget: &schedulerpb.HttpTarget{
-						Uri: s.config.TargetUrl,
+						Uri:        s.config.TargetUrl,
 						HttpMethod: schedulerpb.HttpMethod_POST,
-						Body: bodyBytes,
+						Body:       bodyBytes,
 						AuthorizationHeader: &schedulerpb.HttpTarget_OidcToken{
 							OidcToken: &schedulerpb.OidcToken{
 								ServiceAccountEmail: s.config.ServiceAccount,
@@ -189,7 +190,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 				},
 			},
 		}
-		if _ ,err = s.cloudScheduler.CreateJob(ctx, jobReq); err != nil {
+		if _, err = s.cloudScheduler.CreateJob(ctx, jobReq); err != nil {
 			return nil, err
 		}
 	case pb.Cron_TYPE_AT:
@@ -222,7 +223,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 
 	// Set the name, create and update time
 	req.GetCron().Name = "crons/" + cronID
-	now :=  timestamppb.Now()
+	now := timestamppb.Now()
 	req.GetCron().CreateTime = now
 	req.GetCron().UpdateTime = now
 
@@ -390,7 +391,7 @@ func (s *SpannerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest
 	}
 
 	return &pb.ListCronsResponse{
-		Crons:       resources,
+		Crons:         resources,
 		NextPageToken: nextPageToken,
 	}, nil
 }
@@ -423,14 +424,14 @@ func (s *SpannerService) DeleteCron(ctx context.Context, req *pb.DeleteCronReque
 	switch cron.GetType() {
 	case pb.Cron_TYPE_CRON:
 		if err = s.cloudScheduler.DeleteJob(ctx, &schedulerpb.DeleteJobRequest{
-			Name: fmt.Sprintf("projects/%s/locations/%s/jobs/%s", 
+			Name: fmt.Sprintf("projects/%s/locations/%s/jobs/%s",
 				s.config.SchedulingProject, s.config.SchedulingRegion, cronID),
 		}); err != nil {
 			return nil, err
 		}
 	case pb.Cron_TYPE_AT:
 		if err = s.cloudTasks.DeleteTask(ctx, &taskspb.DeleteTaskRequest{
-			Name: fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", 
+			Name: fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s",
 				s.config.SchedulingProject, s.config.SchedulingRegion, s.config.SchedulingQueue, cronID),
 		}); err != nil {
 			return nil, err
@@ -472,14 +473,14 @@ func (s *SpannerService) RunCron(ctx context.Context, req *pb.RunCronRequest) (*
 	switch cron.GetType() {
 	case pb.Cron_TYPE_CRON:
 		if _, err := s.cloudScheduler.RunJob(ctx, &schedulerpb.RunJobRequest{
-			Name: fmt.Sprintf("projects/%s/locations/%s/jobs/%s", 
+			Name: fmt.Sprintf("projects/%s/locations/%s/jobs/%s",
 				s.config.SchedulingProject, s.config.SchedulingRegion, req.GetId()),
 		}); err != nil {
 			return nil, err
 		}
 	case pb.Cron_TYPE_AT:
 		if _, err := s.cloudTasks.RunTask(ctx, &taskspb.RunTaskRequest{
-			Name: fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s", 
+			Name: fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s",
 				s.config.SchedulingProject, s.config.SchedulingRegion, s.config.SchedulingQueue, req.GetId()),
 		}); err != nil {
 			return nil, err
