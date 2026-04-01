@@ -1,15 +1,23 @@
-// Package service provides the core implementation of the Scheduler service.
+// Package service provides [SpannerService], the built-in Google Cloud Spanner implementation for
+// persisting and managing A2A scheduler crons.
 //
-// This package contains the [SpannerService], which implements the [pb.SchedulerServiceServer]
-// interface. It manages the lifecycle of Crons (scheduled tasks) using Google Cloud Spanner
-// for persistence and leverages Google Cloud Scheduler and Google Cloud Tasks for the
-// actual execution of scheduled events.
+// # SpannerService
 //
-// The service supports:
-//   - Recurring tasks via CRON expressions (using Cloud Scheduler).
-//   - One-time tasks at a specific point in time (using Cloud Tasks).
-//   - Resource-level IAM authorization for managing Crons.
-//   - Integration with the A2A (Agent-to-Agent) ecosystem for triggering agent actions.
+// [NewSpannerService] opens a Spanner client, Cloud Scheduler client, Cloud Tasks client, and
+// configures an IAM authorizer with two roles:
 //
-// The primary entry point for this package is [NewSpannerService].
+//   - roles/open - anonymous CreateCron and ListCrons (see code for exact RPC names).
+//   - roles/cron.owner - GetCron, UpdateCron, DeleteCron, and RunCron for callers bound on the cron.
+//
+// [SpannerService.Register] wraps the generated gRPC registration helper so callers can mount the
+// service without importing the generated protobuf package directly.
+//
+// Cron names must match `^crons/[a-z0-9-]{2,50}$`. Recurring crons are materialized as Cloud Scheduler
+// jobs; one-time crons are materialized as Cloud Tasks. Cron metadata and IAM policy are stored in Spanner.
+//
+// # Code flow (SpannerService)
+//
+//	CreateCron: authorize open RPC -> validate -> create Cloud Scheduler job or Cloud Task -> persist cron + IAM policy.
+//	GetCron / UpdateCron / DeleteCron / RunCron: authorize -> validate -> read cron policy -> check RPC permission -> act on backing resource.
+//	ListCrons: authorize open RPC -> query cron table (optionally filter by policy member).
 package service

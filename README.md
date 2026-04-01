@@ -16,10 +16,10 @@ This project contains a lightweight Go library for developers supporting the [a2
 
 | Package                                                     | Role                                                                                                                                                                                                                                                                                         |
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`go.alis.build/a2a/extension/scheduler/service`](service/) | [`SpannerService`](service/spanner.go) and [`NewSpannerService`](service/spanner.go) for the built-in Google Cloud Spanner + IAM implementation, integrating with Cloud Scheduler and Cloud Tasks.                                                                                         |
+| [`go.alis.build/a2a/extension/scheduler/service`](service/) | [`SpannerService`](service/spanner.go), [`NewSpannerService`](service/spanner.go), and [`(*SpannerService).Register`](service/spanner.go) for the built-in Google Cloud Spanner + IAM implementation and gRPC registration.                                                             |
 | [`go.alis.build/a2a/extension/scheduler/a2asrv`](a2asrv/)   | [`AgentExtension`](a2asrv/extension.go) ([`a2a.AgentExtension`](https://pkg.go.dev/github.com/a2aproject/a2a-go/v2/a2a#AgentExtension)) for advertising extension support.                                                                                                                    |
 | [`go.alis.build/a2a/extension/scheduler/handler`](handler/) | [`NewCronHandler`](handler/handler.go) for processing incoming execution requests at [`SchedulerExtensionHandlerPath`](handler/handler.go).                                                                                                                                                  |
-| [`go.alis.build/a2a/extension/scheduler/jsonrpc`](jsonrpc/) | [`NewJSONRPCHandler`](jsonrpc/jsonrpc.go) with options such as [`WithCORS`](jsonrpc/cors.go), plus JSON-RPC error mapping ([`errors.go`](jsonrpc/errors.go)).                                                                                                                                 |
+| [`go.alis.build/a2a/extension/scheduler/jsonrpc`](jsonrpc/) | [`Register`](jsonrpc/register.go), [`NewJSONRPCHandler`](jsonrpc/jsonrpc.go), and options such as [`WithCORS`](jsonrpc/cors.go), plus JSON-RPC error mapping ([`errors.go`](jsonrpc/errors.go)).                                                                                           |
 
 Package-level documentation (design, IAM roles, execution flow) lives in [`service/docs.go`](service/docs.go), [`a2asrv/docs.go`](a2asrv/docs.go), [`handler/docs.go`](handler/docs.go), and [`jsonrpc/docs.go`](jsonrpc/docs.go). Run `go doc -all ./...` locally for the full commentary.
 
@@ -87,6 +87,13 @@ schedulerService, err := service.NewSpannerService(ctx, &service.SpannerServiceC
 	Audience:          "https://your-agent-endpoint.com",
 	TargetUrl:         "https://your-agent-endpoint.com/alis.a2a.extension.v1.SchedulerService/handler",
 })
+```
+
+Register it on your gRPC server without importing the generated scheduler proto package:
+
+```go
+grpcServer := grpc.NewServer()
+schedulerService.Register(grpcServer)
 ```
 
 Below is Terraform aligned with `SpannerService` expectations (proto columns, IAM).
@@ -158,20 +165,41 @@ agentCard := a2a.AgentCard{
 }
 ```
 
-### HTTP Handlers
+### JSON-RPC handler (optional)
 
-Mount the JSON-RPC handler for management and the Cron handler for executions:
+Expose scheduler management over HTTP with [`jsonrpc.NewJSONRPCHandler`](jsonrpc/jsonrpc.go). The handler accepts optional functional options (`...jsonrpc.JSONRPCHandlerOption`). Mount it at [`jsonrpc.SchedulerJsonRpcExtensionPath`](jsonrpc/jsonrpc.go) or any path your gateway uses. Wire format: JSON-RPC 2.0 with protobuf messages in `params` / `result` via **protojson**; service errors that are gRPC statuses are translated to JSON-RPC errors (see [`jsonrpc/errors.go`](jsonrpc/errors.go) for codes such as [`ErrNotFound`](jsonrpc/errors.go), [`ErrInvalidParams`](jsonrpc/errors.go)).
+
+Same-origin or non-browser clients (no CORS):
+
+```go
+import "go.alis.build/a2a/extension/scheduler/jsonrpc"
+
+mux.Handle(jsonrpc.SchedulerJsonRpcExtensionPath, jsonrpc.NewJSONRPCHandler(schedulerService))
+```
+
+If you use a method-aware mux such as Go 1.22+ `http.ServeMux`, you can let the package mount the
+scheduler endpoint for you:
+
+```go
+jsonrpc.Register(mux, schedulerService)
+```
+
+Browser clients crossing origins need CORS on the JSON-RPC responses and an OPTIONS preflight. Pass [`jsonrpc.WithCORS`](jsonrpc/cors.go):
+
+```go
+jsonrpc.Register(mux, schedulerService, jsonrpc.WithCORS())
+```
+
+### Cron execution handler
+
+Mount the cron execution handler for Cloud Scheduler or Cloud Tasks callbacks:
 
 ```go
 import (
 	schedulerhandler "go.alis.build/a2a/extension/scheduler/handler"
-	schedulerjsonrpc "go.alis.build/a2a/extension/scheduler/jsonrpc"
 )
 
-// JSON-RPC for management (Create, List, etc.)
-mux.Handle(schedulerjsonrpc.SchedulerJsonRpcExtensionPath, schedulerjsonrpc.NewJSONRPCHandler(schedulerService))
-
-// Cron handler for triggered executions (e.g. at http://localhost:8000/jsonrpc)
+// Cron handler for triggered executions (e.g. target URL points here)
 mux.HandleFunc("POST "+schedulerhandler.SchedulerExtensionHandlerPath, schedulerhandler.NewCronHandler("http://localhost:8000/jsonrpc", schedulerService))
 ```
 

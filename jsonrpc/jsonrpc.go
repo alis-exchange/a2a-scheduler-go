@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"strings"
 	"go.alis.build/alog"
@@ -29,7 +28,7 @@ const (
 	methodListCrons        = "ListCrons"
 	methodRunCron          = "RunCron"
 
-	// JSONRPC endpoint for serving A2A
+	// SchedulerJsonRpcExtensionPath is the default HTTP path segment for mounting [NewJSONRPCHandler].
 	SchedulerJsonRpcExtensionPath = "/alis.a2a.extension.v1.SchedulerService"
 )
 
@@ -114,13 +113,13 @@ func (h *jsonrpcHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	defer func() {
 		if err := req.Body.Close(); err != nil {
-			log.Fatal(ctx, "failed to close request body", err)
+			alog.Alertf(ctx, "failed to close request body: %v", err)
 		}
 	}()
 
 	var payload jsonrpcRequest
 	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-		h.writeJSONRPCError(ctx, rw, ErrInvalidRequest{err: err}, payload.ID)
+		h.writeJSONRPCError(ctx, rw, ErrParseError{err: err}, payload.ID)
 		return
 	}
 
