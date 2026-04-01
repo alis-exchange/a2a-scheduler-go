@@ -13,16 +13,17 @@ import (
 	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v0"
 	"github.com/golang-jwt/jwt/v5"
 	"go.alis.build/alog"
+	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 )
 
 const DefaultAgentTarget = "localhost:8085"
+const HistoryExtensionURI = "https://a2a.alis.build/extensions/history/v1"
 
 type response struct {
 	Status string `json:"status"`
-	Error string  `json:"error,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 type Config struct {
@@ -62,9 +63,9 @@ func normalizeAgentTarget(target string) string {
 func callAgent(ctx context.Context, target, prompt, userID, email, token string) error {
 	endpoints := []*a2a.AgentInterface{
 		{
-			URL:              normalizeAgentTarget(target),
-			ProtocolBinding:  a2a.TransportProtocolGRPC,
-			ProtocolVersion:  "1.0.0",
+			URL:             normalizeAgentTarget(target),
+			ProtocolBinding: a2a.TransportProtocolGRPC,
+			ProtocolVersion: "1.0.0",
 		},
 	}
 
@@ -81,6 +82,7 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 		"x-alis-forwarded-authorization": {"Bearer " + token},
 		"x-alis-user-id":                 {userID},
 		"x-alis-user-email":              {email},
+		a2a.SvcParamExtensions:           {HistoryExtensionURI},
 	})
 
 	_, err = client.SendMessage(ctx, &a2a.SendMessageRequest{
@@ -98,7 +100,7 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 }
 
 func handleError(ctx context.Context, w http.ResponseWriter, msg string) {
-    alog.Errorf(ctx, "error: %s", msg)
+	alog.Errorf(ctx, "error: %s", msg)
 	w.WriteHeader(http.StatusInternalServerError)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response{Status: "FAILED", Error: msg})
@@ -109,7 +111,6 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		
 
 		// The request body is expected to contain a single cron-id string parameter.
 		var body struct {
@@ -131,7 +132,7 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 			return
 		}
 		ownerID := strings.Split(cron.GetOwner(), "/")[1]
-		
+
 		// Prepare a 'x-alis-forwarded-authorization' header
 		jwt := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 			"sub":   ownerID,
@@ -145,13 +146,13 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 
 		// Invoke agent
 		newCtx := context.WithoutCancel(ctx)
-		go func (){
+		go func() {
 			err = callAgent(newCtx, cfg.AgentTarget, cron.GetPrompt(), ownerID, cron.GetEmail(), token)
 			if err != nil {
 				alog.Errorf(ctx, "agent invocation failed: %v", err)
 			}
-		} ()
-		
+		}()
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(response{Status: "OK"}); err != nil {
