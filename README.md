@@ -18,7 +18,7 @@ This project contains a lightweight Go library for developers supporting the [a2
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`go.alis.build/a2a/extension/scheduler/service`](service/) | [`SpannerService`](service/spanner.go), [`NewSpannerService`](service/spanner.go), and [`(*SpannerService).Register`](service/spanner.go) for the built-in Google Cloud Spanner + IAM implementation and gRPC registration.                                                             |
 | [`go.alis.build/a2a/extension/scheduler/a2asrv`](a2asrv/)   | [`AgentExtension`](a2asrv/extension.go) ([`a2a.AgentExtension`](https://pkg.go.dev/github.com/a2aproject/a2a-go/v2/a2a#AgentExtension)) for advertising extension support.                                                                                                                    |
-| [`go.alis.build/a2a/extension/scheduler/handler`](handler/) | [`NewCronHandler`](handler/handler.go) for processing incoming execution requests at [`SchedulerExtensionHandlerPath`](handler/handler.go).                                                                                                                                                  |
+| [`go.alis.build/a2a/extension/scheduler/handler`](handler/) | [`NewCronHandler`](handler/handler.go) for the core execution handler, plus [`Register`](handler/register.go) as a convenience helper for mounting it at [`SchedulerExtensionHandlerPath`](handler/handler.go). Defaults to the local agent gRPC target and supports override options. |
 | [`go.alis.build/a2a/extension/scheduler/jsonrpc`](jsonrpc/) | [`Register`](jsonrpc/register.go), [`NewJSONRPCHandler`](jsonrpc/jsonrpc.go), and options such as [`WithCORS`](jsonrpc/cors.go), plus JSON-RPC error mapping ([`errors.go`](jsonrpc/errors.go)).                                                                                           |
 
 Package-level documentation (design, IAM roles, execution flow) lives in [`service/docs.go`](service/docs.go), [`a2asrv/docs.go`](a2asrv/docs.go), [`handler/docs.go`](handler/docs.go), and [`jsonrpc/docs.go`](jsonrpc/docs.go). Run `go doc -all ./...` locally for the full commentary.
@@ -96,48 +96,91 @@ grpcServer := grpc.NewServer()
 schedulerService.Register(grpcServer)
 ```
 
-Below is Terraform aligned with `SpannerService` expectations (proto columns, IAM).
+We suggest that you keep the scheduler resources in a dedicated extension module at:
+
+```text
+infra/
+  main.tf
+  apis.tf
+  extensions/
+    alis.a2a.extension.scheduler.v1/
+      main.tf
+```
+
+The root module wires the scheduler extension like this:
 
 ```hcl
-# Cloud Tasks Queue used for scheduling one-time (AT type) tasks.
-resource "google_cloud_tasks_queue" "a2a_scheduler_queue" {
-  name     = "CLOUD_TASKS_QUEUE_NAME"
-  location = "GCP_REGION"
-  project  = "SCHEDULING_PROJECT_ID"
+module "alis_a2a_extension_scheduler_v1" {
+  source = "./extensions/alis.a2a.extension.scheduler.v1"
+
+  alis_os_project               = var.ALIS_OS_PROJECT
+  alis_region                   = var.ALIS_REGION
+  alis_managed_spanner_project  = var.ALIS_MANAGED_SPANNER_PROJECT
+  alis_managed_spanner_instance = var.ALIS_MANAGED_SPANNER_INSTANCE
+  alis_managed_spanner_db       = var.ALIS_MANAGED_SPANNER_DB
+  agent_service_name            = google_cloud_run_v2_service.agent.name
+  neuron                        = local.neuron
+
+  depends_on = [google_project_service.environment]
+}
+```
+
+Inside `extensions/alis.a2a.extension.scheduler.v1/main.tf`, provision the Cloud Run invoker binding, Cloud Tasks queue, and Spanner table aligned with `SpannerService` expectations:
+
+```hcl
+resource "google_cloud_run_service_iam_member" "scheduler_invoker" {
+  service  = var.agent_service_name
+  location = var.alis_region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:alis-build@${var.alis_os_project}.iam.gserviceaccount.com"
 }
 
-# Spanner table for persisting Cron resources and their associated IAM policies.
-resource "alis_google_spanner_table" "a2a_scheduler_crons" {
-  project         = "SPANNER_PROJECT_ID"
-  instance        = "SPANNER_INSTANCE_ID"
-  database        = "SPANNER_DATABASE_ID"
-  name            = "CRONS_TABLE_NAME"
+resource "google_cloud_tasks_queue" "scheduler" {
+  name     = "${var.neuron}-scheduler-v1"
+  location = var.alis_region
+}
+
+resource "alis_google_spanner_table" "crons" {
+  project         = var.alis_managed_spanner_project
+  instance        = var.alis_managed_spanner_instance
+  database        = var.alis_managed_spanner_db
+  name            = "${replace(var.alis_os_project, "-", "_")}_${replace(var.neuron, "-", "_")}_Crons"
+  prevent_destroy = false
+
   schema = {
     columns = [
       {
-        name           = "key",
-        type           = "STRING",
-        is_primary_key = true,
+        name           = "key"
+        type           = "STRING"
+        is_primary_key = true
         required       = true
       },
       {
-        name          = "Cron",
+        name          = "Cron"
         type          = "PROTO"
         proto_package = "alis.a2a.extension.scheduler.v1.Cron"
         required      = true
       },
       {
-        name          = "Policy",
+        name          = "Policy"
         type          = "PROTO"
         proto_package = "google.iam.v1.Policy"
-        required      = true
+        required      = false
       },
       {
-        name            = "create_time",
-        type            = "TIMESTAMP",
-        required        = false,
-        is_computed     = true,
-        computation_ddl = "TIMESTAMP_ADD(TIMESTAMP_SECONDS(Cron.create_time.seconds),INTERVAL CAST(FLOOR(Cron.create_time.nanos / 1000) AS INT64) MICROSECOND)",
+        name            = "create_time"
+        type            = "TIMESTAMP"
+        required        = false
+        is_computed     = true
+        computation_ddl = "TIMESTAMP_ADD(TIMESTAMP_SECONDS(Cron.create_time.seconds), INTERVAL CAST(FLOOR(Cron.create_time.nanos / 1000) AS INT64) MICROSECOND)"
+        is_stored       = true
+      },
+      {
+        name            = "update_time"
+        type            = "TIMESTAMP"
+        required        = false
+        is_computed     = true
+        computation_ddl = "TIMESTAMP_ADD(TIMESTAMP_SECONDS(Cron.update_time.seconds), INTERVAL CAST(FLOOR(Cron.update_time.nanos / 1000) AS INT64) MICROSECOND)"
         is_stored       = true
       },
     ]
@@ -200,7 +243,17 @@ import (
 )
 
 // Cron handler for triggered executions (e.g. target URL points here)
-mux.HandleFunc("POST "+schedulerhandler.SchedulerExtensionHandlerPath, schedulerhandler.NewCronHandler("http://localhost:8000/jsonrpc", schedulerService))
+schedulerhandler.Register(mux, schedulerService)
+```
+
+If the cron handler must invoke a different agent endpoint, override the default gRPC target:
+
+```go
+schedulerhandler.Register(
+	mux,
+	schedulerService,
+	schedulerhandler.WithAgentTarget("example.internal:8443"),
+)
 ```
 
 ## Documentation

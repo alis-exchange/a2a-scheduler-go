@@ -26,6 +26,8 @@ github.com/GoogleCloudPlatform/grpc-gcp-go/grpcgcp v1.6.0 h1:BzsL0qE7LvtTEtXG7Dt
 github.com/GoogleCloudPlatform/grpc-gcp-go/grpcgcp v1.6.0/go.mod h1:I7kE2kM3qCr9QPT4cU4cCFYkEpVyVr16YOGUHzy+nR0=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.30.0 h1:sBEjpZlNHzK1voKq9695PJSX2o5NEXl7/OL3coiIY0c=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.30.0/go.mod h1:P4WPRUkOhJC13W//jWpyfJNDAIpvRbAUIYLX/4jtlE0=
+github.com/a2aproject/a2a-go v0.3.12 h1:l5Yd0UgZrZyEuiMRlj3ybiqxmqXvVhJ8bTyWB7ZlJ2o=
+github.com/a2aproject/a2a-go v0.3.12/go.mod h1:I7Cm+a1oL+UT6zMoP+roaRE5vdfUa1iQGVN8aSOuZ0I=
 github.com/a2aproject/a2a-go/v2 v2.0.1 h1:sZ6EoJ7wG4+kmwAHpvFpsYPYCu530UyrdgnBMmuwgd0=
 github.com/a2aproject/a2a-go/v2 v2.0.1/go.mod h1:cAjhgtWmkbD/A4XklRE84f3N4WDGH7GLyYievWKawXg=
 github.com/alis-exchange/go-alis-build/iam/v2 v2.2.1 h1:GDqXPEHws4CqTY7mFYbNJVfE37p/JHtmkhL+Z9xSq4Q=

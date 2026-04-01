@@ -1,76 +1,91 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"context"
+	"net/url"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
-	"go.alis.build/alog"
+	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v0"
 	"github.com/golang-jwt/jwt/v5"
-
+	"go.alis.build/alog"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 )
 
-const (
-	// Endpoint for handling scheduled invocations
-	SchedulerExtensionHandlerPath = "/alis.a2a.extension.v1.SchedulerService/handler"
-)
+const DefaultAgentTarget = "localhost:8085"
 
 type response struct {
 	Status string `json:"status"`
 	Error string  `json:"error,omitempty"`
 }
 
-type bearerAuthTransport struct {
-	XAlisForwardToken  string
-	Email  string
-	UserID string
-	rt     http.RoundTripper
+type Config struct {
+	AgentTarget string
 }
 
-func (b *bearerAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	cloned := req.Clone(req.Context())
-	cloned.Header.Set("x-alis-forwarded-authorization", "Bearer "+b.XAlisForwardToken)
-	cloned.Header.Set("x-alis-user-id", b.UserID)
-	cloned.Header.Set("x-alis-user-email", b.Email)
-	rt := b.rt
-	if rt == nil {
-		rt = http.DefaultTransport
+type Option func(*Config)
+
+func WithAgentTarget(target string) Option {
+	return func(cfg *Config) {
+		cfg.AgentTarget = target
 	}
-	return rt.RoundTrip(cloned)
+}
+
+func newConfig(opts ...Option) *Config {
+	cfg := &Config{
+		AgentTarget: DefaultAgentTarget,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(cfg)
+		}
+	}
+	return cfg
+}
+
+func normalizeAgentTarget(target string) string {
+	if target == "" {
+		return DefaultAgentTarget
+	}
+	if parsed, err := url.Parse(target); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(target, "http://"), "https://")
 }
 
 func callAgent(ctx context.Context, target, prompt, userID, email, token string) error {
-
 	endpoints := []*a2a.AgentInterface{
 		{
-			URL: 			 target,
-			ProtocolBinding: a2a.TransportProtocolJSONRPC,
-			ProtocolVersion: "1.0.0",
+			URL:              normalizeAgentTarget(target),
+			ProtocolBinding:  a2a.TransportProtocolGRPC,
+			ProtocolVersion:  "1.0.0",
 		},
 	}
 
-	httpClient := &http.Client{
-		Transport: &bearerAuthTransport{
-			XAlisForwardToken: token,
-			UserID: userID,
-			Email:  email,
-			rt:     http.DefaultTransport,
-		},
-	}
-
-	client, err := a2aclient.NewFromEndpoints(ctx, endpoints, a2aclient.WithJSONRPCTransport(httpClient))
+	client, err := a2aclient.NewFromEndpoints(
+		ctx,
+		endpoints,
+		a2agrpc.WithGRPCTransport(grpc.WithTransportCredentials(insecure.NewCredentials())),
+	)
 	if err != nil {
 		return err
 	}
 
+	ctx = a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams{
+		"x-alis-forwarded-authorization": {"Bearer " + token},
+		"x-alis-user-id":                 {userID},
+		"x-alis-user-email":              {email},
+	})
+
 	_, err = client.SendMessage(ctx, &a2a.SendMessageRequest{
 		Message: a2a.NewMessage(
-			a2a.MessageRoleUser, 
+			a2a.MessageRoleUser,
 			a2a.NewTextPart(prompt),
 		),
 	})
@@ -89,7 +104,9 @@ func handleError(ctx context.Context, w http.ResponseWriter, msg string) {
 	json.NewEncoder(w).Encode(response{Status: "FAILED", Error: msg})
 }
 
-func NewCronHandler(target string, service pb.SchedulerServiceServer) http.HandlerFunc {
+func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.HandlerFunc {
+	cfg := newConfig(opts...)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		
@@ -129,7 +146,7 @@ func NewCronHandler(target string, service pb.SchedulerServiceServer) http.Handl
 		// Invoke agent
 		newCtx := context.WithoutCancel(ctx)
 		go func (){
-			err = callAgent(newCtx, target, cron.GetPrompt(), ownerID, cron.GetEmail(), token)
+			err = callAgent(newCtx, cfg.AgentTarget, cron.GetPrompt(), ownerID, cron.GetEmail(), token)
 			if err != nil {
 				alog.Errorf(ctx, "agent invocation failed: %v", err)
 			}
