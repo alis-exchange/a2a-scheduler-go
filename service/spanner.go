@@ -130,6 +130,15 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 	// Validation
 	validator := validation.NewValidator()
 	validator.MessageIsPopulated("cron", req.GetCron() != nil)
+	validator.String("cron.prompt", req.GetCron().GetPrompt()).IsPopulated()
+	validator.String("cron.timezone", req.GetCron().GetTimezone()).IsPopulated()
+	validator.Enum("cron.type", req.GetCron().GetType()).IsOneof(pb.Cron_TYPE_CRON, pb.Cron_TYPE_AT)
+	validator.If(validator.Enum("cron.type", req.GetCron().GetType()).Is(pb.Cron_TYPE_CRON)).Then(
+		validator.String("expr", req.GetCron().GetExpr()).IsPopulated(),
+	)
+	validator.If(validator.Enum("cron.type", req.GetCron().GetType()).Is(pb.Cron_TYPE_AT)).Then(
+		validator.Timestamp("cron.at", req.GetCron().GetAt()).IsPopulated(),
+	)
 	if err := validator.Validate(); err != nil {
 		return nil, err
 	}
