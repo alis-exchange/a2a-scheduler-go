@@ -16,6 +16,7 @@ import (
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 const DefaultAgentTarget = "localhost:8085"
@@ -149,7 +150,27 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 		go func() {
 			err = callAgent(newCtx, cfg.AgentTarget, cron.GetPrompt(), ownerID, cron.GetEmail(), token)
 			if err != nil {
-				alog.Errorf(ctx, "agent invocation failed: %v", err)
+				if st, ok := status.FromError(err); ok {
+					alog.Errorf(
+						ctx,
+						"agent invocation failed target=%s owner=%s code=%s message=%q details=%T %v",
+						normalizeAgentTarget(cfg.AgentTarget),
+						ownerID,
+						st.Code(),
+						st.Message(),
+						st.Details(),
+						st.Details(),
+					)
+					return
+				}
+				alog.Errorf(
+					ctx,
+					"agent invocation failed target=%s owner=%s err=%T %v",
+					normalizeAgentTarget(cfg.AgentTarget),
+					ownerID,
+					err,
+					err,
+				)
 			}
 		}()
 
