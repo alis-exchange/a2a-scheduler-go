@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 // DefaultAgentTarget is the fallback A2A agent endpoint used by the handler.
@@ -72,7 +73,7 @@ func normalizeAgentTarget(target string) string {
 }
 
 // callAgent forwards the cron prompt to the configured A2A agent as the owner.
-func callAgent(ctx context.Context, target, prompt, userID, email, token string) error {
+func callAgent(ctx context.Context, target, prompt, contextID, userID, email, token string) (string, error) {
 	endpoints := []*a2a.AgentInterface{
 		{
 			URL:             normalizeAgentTarget(target),
@@ -87,7 +88,7 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 		a2agrpc.WithGRPCTransport(grpc.WithTransportCredentials(insecure.NewCredentials())),
 	)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	ctx = a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams{
@@ -97,18 +98,38 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 		a2a.SvcParamExtensions:   {HistoryExtensionURI},
 	})
 
-	_, err = client.SendMessage(ctx, &a2a.SendMessageRequest{
-		Message: a2a.NewMessage(
-			a2a.MessageRoleUser,
-			a2a.NewTextPart(prompt),
-		),
+	message := a2a.NewMessage(
+		a2a.MessageRoleUser,
+		a2a.NewTextPart(prompt),
+	)
+	// Reuse the cron's existing A2A context so repeated executions stay in one thread.
+	if contextID != "" {
+		message.ContextID = contextID
+	}
+
+	result, err := client.SendMessage(ctx, &a2a.SendMessageRequest{
+		Message: message,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	alog.Info(ctx, "Agent invocation completed")
 
-	return nil
+	return contextIDFromResult(result), nil
+}
+
+// contextIDFromResult extracts the A2A context identifier from a send result.
+func contextIDFromResult(result a2a.SendMessageResult) string {
+	// A2A send can resolve to either a task or a direct message response, and both
+	// shapes can carry the authoritative context identifier we want to persist.
+	switch result := result.(type) {
+	case *a2a.Task:
+		return result.ContextID
+	case *a2a.Message:
+		return result.ContextID
+	default:
+		return ""
+	}
 }
 
 // handleError logs an internal error and writes a standard failure response.
@@ -161,8 +182,40 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 		// Invoke agent
 		newCtx := context.WithoutCancel(ctx)
 		go func() {
-			err = callAgent(newCtx, cfg.AgentTarget, cron.GetPrompt(), ownerID, cron.GetEmail(), token)
-			if err != nil {
+			returnedContextID, callErr := callAgent(
+				newCtx,
+				cfg.AgentTarget,
+				cron.GetPrompt(),
+				cron.GetContextId(),
+				ownerID,
+				cron.GetEmail(),
+				token,
+			)
+			// Capture the first server-assigned context so future cron executions can
+			// continue the same conversation instead of starting a fresh one each time.
+			if callErr == nil && cron.GetContextId() == "" && returnedContextID != "" {
+				if _, updateErr := service.UpdateCron(newCtx, &pb.UpdateCronRequest{
+					Cron: &pb.Cron{
+						Name:      cron.GetName(),
+						ContextId: returnedContextID,
+					},
+					UpdateMask: &fieldmaskpb.FieldMask{
+						Paths: []string{"context_id"},
+					},
+				}); updateErr != nil {
+					alog.Errorf(
+						ctx,
+						"failed to persist cron context target=%s cron=%s context=%s err=%T %v",
+						normalizeAgentTarget(cfg.AgentTarget),
+						cron.GetName(),
+						returnedContextID,
+						updateErr,
+						updateErr,
+					)
+				}
+			}
+			if callErr != nil {
+				err := callErr
 				if st, ok := status.FromError(err); ok {
 					alog.Errorf(
 						ctx,
