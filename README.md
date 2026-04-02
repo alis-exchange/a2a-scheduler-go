@@ -2,6 +2,8 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
+![A2A Scheduler banner](banner.svg)
+
 This project contains a lightweight Go library for developers supporting the [a2a-scheduler](spec.md) A2A extension.
 
 ## Features
