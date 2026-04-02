@@ -13,7 +13,7 @@ require (
 	github.com/mennanov/fmutils v0.3.6
 	go.alis.build/alog v0.0.19
 	go.alis.build/common v1.0.19
-	go.alis.build/iam/v2 v2.3.0
+	go.alis.build/iam/v2 v2.4.0
 	go.alis.build/validation v1.0.7
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11

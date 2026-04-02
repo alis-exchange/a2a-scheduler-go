@@ -14,31 +14,40 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"go.alis.build/alog"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
+	"go.alis.build/iam/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
+// DefaultAgentTarget is the fallback A2A agent endpoint used by the handler.
 const DefaultAgentTarget = "localhost:8085"
+
+// HistoryExtensionURI enables the history extension on forwarded A2A requests.
 const HistoryExtensionURI = "https://a2a.alis.build/extensions/history/v1"
 
+// response is the JSON payload returned by the HTTP handler.
 type response struct {
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 }
 
+// Config configures how the cron handler connects to the downstream agent.
 type Config struct {
 	AgentTarget string
 }
 
+// Option mutates a Config during handler construction.
 type Option func(*Config)
 
+// WithAgentTarget overrides the downstream A2A agent target used by the handler.
 func WithAgentTarget(target string) Option {
 	return func(cfg *Config) {
 		cfg.AgentTarget = target
 	}
 }
 
+// newConfig builds a Config from the provided options and defaults.
 func newConfig(opts ...Option) *Config {
 	cfg := &Config{
 		AgentTarget: DefaultAgentTarget,
@@ -51,6 +60,7 @@ func newConfig(opts ...Option) *Config {
 	return cfg
 }
 
+// normalizeAgentTarget strips any scheme and returns a host:port target.
 func normalizeAgentTarget(target string) string {
 	if target == "" {
 		return DefaultAgentTarget
@@ -61,6 +71,7 @@ func normalizeAgentTarget(target string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(target, "http://"), "https://")
 }
 
+// callAgent forwards the cron prompt to the configured A2A agent as the owner.
 func callAgent(ctx context.Context, target, prompt, userID, email, token string) error {
 	endpoints := []*a2a.AgentInterface{
 		{
@@ -80,10 +91,10 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 	}
 
 	ctx = a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams{
-		"x-alis-forwarded-authorization": {"Bearer " + token},
-		"x-alis-user-id":                 {userID},
-		"x-alis-user-email":              {email},
-		a2a.SvcParamExtensions:           {HistoryExtensionURI},
+		iam.AlisForwardingHeader: {"Bearer " + token},
+		iam.AlisUserIDHeader:     {userID},
+		iam.AlisUserEmailHeader:  {email},
+		a2a.SvcParamExtensions:   {HistoryExtensionURI},
 	})
 
 	_, err = client.SendMessage(ctx, &a2a.SendMessageRequest{
@@ -100,6 +111,7 @@ func callAgent(ctx context.Context, target, prompt, userID, email, token string)
 	return nil
 }
 
+// handleError logs an internal error and writes a standard failure response.
 func handleError(ctx context.Context, w http.ResponseWriter, msg string) {
 	alog.Errorf(ctx, "error: %s", msg)
 	w.WriteHeader(http.StatusInternalServerError)
@@ -107,6 +119,7 @@ func handleError(ctx context.Context, w http.ResponseWriter, msg string) {
 	json.NewEncoder(w).Encode(response{Status: "FAILED", Error: msg})
 }
 
+// NewCronHandler returns an HTTP handler that executes a stored cron prompt.
 func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.HandlerFunc {
 	cfg := newConfig(opts...)
 
@@ -134,7 +147,7 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 		}
 		ownerID := strings.Split(cron.GetOwner(), "/")[1]
 
-		// Prepare a 'x-alis-forwarded-authorization' header
+		// Prepare the forwarded authorization token for the downstream agent request.
 		jwt := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 			"sub":   ownerID,
 			"email": cron.GetEmail(),
