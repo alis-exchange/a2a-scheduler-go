@@ -119,12 +119,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.alis.build/alog v0.0.19 h1:3a/q6QVQYYkmo0GPkdNfF9cCY/0/3KRDcElkIkpebGg=
 go.alis.build/alog v0.0.19/go.mod h1:oD3NpuyiInxaTWWASimp82SZk2vwILPV39alqv6e7Ss=
-go.alis.build/common v1.0.17 h1:Vl+uvw/gchtZaz8fuw6hwI1NgfGUvb0jfA+uCZBlEC4=
-go.alis.build/common v1.0.17/go.mod h1:PwCtHaSYYR8bN1Dk0eRao+aaCPnapxBwgG0GZyzaaXg=
 go.alis.build/common v1.0.19 h1:7eDaBAfWA0satxGskLVda43hco7cojVfIozsobVdZjs=
 go.alis.build/common v1.0.19/go.mod h1:PwCtHaSYYR8bN1Dk0eRao+aaCPnapxBwgG0GZyzaaXg=
-go.alis.build/common/alis/a2a v1.0.0 h1:OKktmHxd3gfYKJGU3dOpBFCZ5f1Tqqd6wHr1eJ83NCE=
-go.alis.build/common/alis/a2a v1.0.0/go.mod h1:Hl7z0ZEwpC9kNxSlvt/JU2VCE3rUJ9+1/tXZKnVW76c=
 go.alis.build/iam/v2 v2.3.0 h1:sh4Tun6cws98L95UxVYMtM7JI7nptEpgptaizf2Zi+E=
 go.alis.build/iam/v2 v2.3.0/go.mod h1:S6xRYY4jXkhM7V6726TTFnoajWKsuxtrgF6FaJI/Dco=
 go.alis.build/validation v1.0.7 h1:erNdeUkLw+GvBspqYZk5pZXg1zwX1xuw7EHrz/ZQyUA=
