@@ -6,7 +6,7 @@
 //  1. Receives the execution request at [SchedulerExtensionHandlerPath].
 //  2. Fetches the associated task details using the provided [pb.SchedulerServiceServer].
 //  3. Authorizes the request and prepares the necessary credentials.
-//  4. Invokes the local agent with the configured prompt using the A2A JSON-RPC protocol.
+//  4. Invokes the local agent with the configured prompt using the A2A protocol.
 //
 // [NewCronHandler] defaults to calling [DefaultAgentTarget] over A2A gRPC. Use [WithAgentTarget] to
 // override that when the scheduler handler and target agent are not co-located. [Register] is a convenience helper

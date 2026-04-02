@@ -64,39 +64,31 @@ flowchart TD
 go get -u go.alis.build/a2a/extension/scheduler
 ```
 
+## Intentional setup flow
+
+Treat the scheduler extension as five deliberate steps inside your agent:
+
+1. **Provision the scheduler backing resources** your agent will depend on.
+2. **Instantiate `service.SpannerService`** with values that exactly match those resources.
+3. **Mount the HTTP surfaces** for management and execution.
+4. **Advertise the extension** on your Agent Card so clients know it exists.
+5. **Verify the contract** between infrastructure, handler URLs, and agent target before shipping.
+
+The important design constraint is that the infrastructure names and URLs are not incidental. `SpannerService` creates Cloud Scheduler jobs and Cloud Tasks tasks that call back into your agent, so the values in Terraform and `SpannerServiceConfig` must line up exactly.
+
 ## Getting started
 
-### Scheduler service
+### Step 1: Provision the backing resources first
 
-Use the built-in Spanner-backed `SpannerService`:
+Before you write any application wiring, decide where the extension state and execution resources live:
 
-```go
-import (
-	"go.alis.build/a2a/extension/scheduler/service"
-)
+- **Spanner** stores the `Cron` records and IAM policy.
+- **Cloud Scheduler** executes recurring schedules.
+- **Cloud Tasks** executes one-time schedules.
+- **Cloud Run / HTTP endpoint** receives scheduler callbacks at the cron handler path.
+- **Service account + audience** are used to mint the OIDC token attached to each scheduled callback.
 
-schedulerService, err := service.NewSpannerService(ctx, &service.SpannerServiceConfig{
-	SpannerProject:    "SPANNER_PROJECT_ID",
-	SchedulingProject: "SCHEDULING_PROJECT_ID",
-	SchedulingQueue:   "CLOUD_TASKS_QUEUE_NAME",
-	SchedulingRegion:  "GCP_REGION",
-	Instance:          "SPANNER_INSTANCE_ID",
-	Database:          "SPANNER_DATABASE_ID",
-	CronTable:         "CRONS_TABLE_NAME",
-	ServiceAccount:    "triggering-sa@project.iam.gserviceaccount.com",
-	Audience:          "https://your-agent-endpoint.com",
-	TargetUrl:         "https://your-agent-endpoint.com/alis.a2a.extension.v1.SchedulerService/handler",
-})
-```
-
-Register it on your gRPC server without importing the generated scheduler proto package:
-
-```go
-grpcServer := grpc.NewServer()
-schedulerService.Register(grpcServer)
-```
-
-We suggest that you keep the scheduler resources in a dedicated extension module at:
+We suggest keeping the scheduler resources in a dedicated extension module so the runtime contract is visible in one place:
 
 ```text
 infra/
@@ -188,7 +180,95 @@ resource "alis_google_spanner_table" "crons" {
 }
 ```
 
-### Advertising the extension on the Agent Card
+At the end of this step, you should know these concrete values:
+
+| Value | Why it matters |
+| --- | --- |
+| `SpannerProject`, `Instance`, `Database`, `CronTable` | Tells the service where cron metadata lives. |
+| `SchedulingProject`, `SchedulingRegion`, `SchedulingQueue` | Tells the service where to create jobs and one-off tasks. |
+| `ServiceAccount`, `Audience` | Controls the OIDC identity used when GCP calls your agent back. |
+| `TargetUrl` | Must resolve to your mounted cron execution handler. |
+
+### Step 2: Create the scheduler service with matching values
+
+Once the backing resources exist, wire the runtime service with the exact same values. This is the core setup step for your agent:
+
+```go
+import (
+	"go.alis.build/a2a/extension/scheduler/service"
+)
+
+schedulerService, err := service.NewSpannerService(ctx, &service.SpannerServiceConfig{
+	SpannerProject:    "SPANNER_PROJECT_ID",
+	SchedulingProject: "SCHEDULING_PROJECT_ID",
+	SchedulingQueue:   "CLOUD_TASKS_QUEUE_NAME",
+	SchedulingRegion:  "GCP_REGION",
+	Instance:          "SPANNER_INSTANCE_ID",
+	Database:          "SPANNER_DATABASE_ID",
+	CronTable:         "CRONS_TABLE_NAME",
+	ServiceAccount:    "triggering-sa@project.iam.gserviceaccount.com",
+	Audience:          "https://your-agent-endpoint.com",
+	TargetUrl:         "https://your-agent-endpoint.com/alis.a2a.extension.v1.SchedulerService/handler",
+})
+```
+
+Two fields deserve extra attention:
+
+- `TargetUrl` must point to the HTTP execution handler mounted by [`handler.Register`](handler/register.go).
+- `Audience` must match what your HTTP surface expects when validating the incoming OIDC token.
+
+Register it on your gRPC server without importing the generated scheduler proto package:
+
+```go
+grpcServer := grpc.NewServer()
+schedulerService.Register(grpcServer)
+```
+
+### Step 3: Mount the management and execution surfaces
+
+The extension exposes two separate HTTP concerns:
+
+- **Management API** for clients that create, list, update, or delete crons.
+- **Execution callback** for Cloud Scheduler and Cloud Tasks when it is time to run one.
+
+Mount the execution callback first, because `TargetUrl` depends on it:
+
+```go
+import (
+	schedulerhandler "go.alis.build/a2a/extension/scheduler/handler"
+)
+
+// Cloud Scheduler / Cloud Tasks POST here when a cron fires.
+schedulerhandler.Register(mux, schedulerService)
+```
+
+If the handler needs to invoke a different A2A gRPC endpoint than the default local target (`localhost:8085`), override it explicitly:
+
+```go
+schedulerhandler.Register(
+	mux,
+	schedulerService,
+	schedulerhandler.WithAgentTarget("example.internal:8443"),
+)
+```
+
+Then expose the optional JSON-RPC management API:
+
+```go
+import "go.alis.build/a2a/extension/scheduler/jsonrpc"
+
+jsonrpc.Register(mux, schedulerService)
+```
+
+If browser clients will call the JSON-RPC endpoint across origins, enable CORS intentionally rather than by accident:
+
+```go
+jsonrpc.Register(mux, schedulerService, jsonrpc.WithCORS())
+```
+
+For routers that do not support Go 1.22 method-aware patterns, mount [`handler.NewCronHandler`](handler/handler.go) and [`jsonrpc.NewJSONRPCHandler`](jsonrpc/jsonrpc.go) directly.
+
+### Step 4: Advertise the extension on the Agent Card
 
 Advertise support for the scheduler extension in your Agent Card:
 
@@ -208,53 +288,17 @@ agentCard := a2a.AgentCard{
 }
 ```
 
-### JSON-RPC handler (optional)
+### Step 5: Verify the runtime contract before rollout
 
-Expose scheduler management over HTTP with [`jsonrpc.NewJSONRPCHandler`](jsonrpc/jsonrpc.go). The handler accepts optional functional options (`...jsonrpc.JSONRPCHandlerOption`). Mount it at [`jsonrpc.SchedulerJsonRpcExtensionPath`](jsonrpc/jsonrpc.go) or any path your gateway uses. Wire format: JSON-RPC 2.0 with protobuf messages in `params` / `result` via **protojson**; service errors that are gRPC statuses are translated to JSON-RPC errors (see [`jsonrpc/errors.go`](jsonrpc/errors.go) for codes such as [`ErrNotFound`](jsonrpc/errors.go), [`ErrInvalidParams`](jsonrpc/errors.go)).
+Before you consider the extension integrated, check these five conditions:
 
-Same-origin or non-browser clients (no CORS):
+1. `TargetUrl` resolves to the same deployed route as [`handler.HandlerPath`](handler/register.go).
+2. The service account in `SpannerServiceConfig` has permission to invoke that HTTP endpoint.
+3. The Cloud Tasks queue name and region match the values passed into `NewSpannerService`.
+4. The Spanner table schema matches the `Cron` and `Policy` proto storage contract shown above.
+5. The cron handler can reach the target agent over A2A gRPC, either at the default local target or the explicit `WithAgentTarget(...)` override.
 
-```go
-import "go.alis.build/a2a/extension/scheduler/jsonrpc"
-
-mux.Handle(jsonrpc.SchedulerJsonRpcExtensionPath, jsonrpc.NewJSONRPCHandler(schedulerService))
-```
-
-If you use a method-aware mux such as Go 1.22+ `http.ServeMux`, you can let the package mount the
-scheduler endpoint for you:
-
-```go
-jsonrpc.Register(mux, schedulerService)
-```
-
-Browser clients crossing origins need CORS on the JSON-RPC responses and an OPTIONS preflight. Pass [`jsonrpc.WithCORS`](jsonrpc/cors.go):
-
-```go
-jsonrpc.Register(mux, schedulerService, jsonrpc.WithCORS())
-```
-
-### Cron execution handler
-
-Mount the cron execution handler for Cloud Scheduler or Cloud Tasks callbacks:
-
-```go
-import (
-	schedulerhandler "go.alis.build/a2a/extension/scheduler/handler"
-)
-
-// Cron handler for triggered executions (e.g. target URL points here)
-schedulerhandler.Register(mux, schedulerService)
-```
-
-If the cron handler must invoke a different agent endpoint, override the default gRPC target:
-
-```go
-schedulerhandler.Register(
-	mux,
-	schedulerService,
-	schedulerhandler.WithAgentTarget("example.internal:8443"),
-)
-```
+If any one of these is wrong, the extension will usually compile and register cleanly but fail only when a cron is created or fired. That is why the setup should be treated as a contract, not just an import-and-mount exercise.
 
 ## Documentation
 
