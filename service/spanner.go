@@ -380,11 +380,11 @@ func (s *SpannerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest
 	var resources []*pb.Cron
 	iterator := s.db.ReadOnlyTransaction().Query(ctx, statement)
 	if err := iterator.Do(func(r *spanner.Row) error {
-		history := &pb.Cron{}
-		if err := r.Columns(history); err != nil {
+		cron := &pb.Cron{}
+		if err := r.Columns(cron); err != nil {
 			return err
 		}
-		resources = append(resources, history)
+		resources = append(resources, cron)
 		return nil
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "querying database: %v", err)
