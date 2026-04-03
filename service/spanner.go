@@ -440,7 +440,9 @@ func (s *SpannerService) DeleteCron(ctx context.Context, req *pb.DeleteCronReque
 			Name: fmt.Sprintf("projects/%s/locations/%s/queues/%s/tasks/%s",
 				s.config.SchedulingProject, s.config.SchedulingRegion, s.config.SchedulingQueue, cronID),
 		}); err != nil {
-			return nil, err
+			if status.Code(err) != codes.NotFound {
+				return nil, err
+			}
 		}
 	}
 
