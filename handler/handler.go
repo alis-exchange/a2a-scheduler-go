@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // DefaultAgentTarget is the fallback A2A agent endpoint used by the handler.
@@ -140,6 +141,14 @@ func handleError(ctx context.Context, w http.ResponseWriter, msg string) {
 	json.NewEncoder(w).Encode(response{Status: "FAILED", Error: msg})
 }
 
+// mergeContextID prefers a newly returned context ID and otherwise keeps the existing one.
+func mergeContextID(existing, returned string) string {
+	if returned != "" {
+		return returned
+	}
+	return existing
+}
+
 // NewCronHandler returns an HTTP handler that executes a stored cron prompt.
 func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.HandlerFunc {
 	cfg := newConfig(opts...)
@@ -166,6 +175,15 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 			handleError(ctx, w, err.Error())
 			return
 		}
+		if cron.GetState() == pb.Cron_STATE_ARCHIVED {
+			alog.Infof(ctx, "Skipping archived Cron (%s)", body.CronID)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if err := json.NewEncoder(w).Encode(response{Status: "OK"}); err != nil {
+				alog.Errorf(ctx, "failed to encode response: %v", err)
+			}
+			return
+		}
 		ownerID := strings.Split(cron.GetOwner(), "/")[1]
 
 		// Prepare the forwarded authorization token for the downstream agent request.
@@ -182,38 +200,57 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 		// Invoke agent
 		newCtx := context.WithoutCancel(ctx)
 		go func() {
+			contextID := cron.GetContextId()
+
+			// Seed recurring crons with the initial prompt only once, before the first
+			// regular prompt is sent, so later executions reuse the same conversation.
+			if cron.GetType() == pb.Cron_TYPE_CRON && contextID == "" && cron.GetInitialPrompt() != "" {
+				initialContextID, initialErr := callAgent(
+					newCtx,
+					cfg.AgentTarget,
+					cron.GetInitialPrompt(),
+					"",
+					ownerID,
+					cron.GetEmail(),
+					token,
+				)
+				if initialErr != nil {
+					callErr := initialErr
+					if st, ok := status.FromError(callErr); ok {
+						alog.Errorf(
+							ctx,
+							"initial agent invocation failed target=%s owner=%s code=%s message=%q details=%T %v",
+							normalizeAgentTarget(cfg.AgentTarget),
+							ownerID,
+							st.Code(),
+							st.Message(),
+							st.Details(),
+							st.Details(),
+						)
+						return
+					}
+					alog.Errorf(
+						ctx,
+						"initial agent invocation failed target=%s owner=%s err=%T %v",
+						normalizeAgentTarget(cfg.AgentTarget),
+						ownerID,
+						callErr,
+						callErr,
+					)
+					return
+				}
+				contextID = mergeContextID(contextID, initialContextID)
+			}
+
 			returnedContextID, callErr := callAgent(
 				newCtx,
 				cfg.AgentTarget,
 				cron.GetPrompt(),
-				cron.GetContextId(),
+				contextID,
 				ownerID,
 				cron.GetEmail(),
 				token,
 			)
-			// Capture the first server-assigned context so future cron executions can
-			// continue the same conversation instead of starting a fresh one each time.
-			if callErr == nil && cron.GetContextId() == "" && returnedContextID != "" {
-				if _, updateErr := service.UpdateCron(newCtx, &pb.UpdateCronRequest{
-					Cron: &pb.Cron{
-						Name:      cron.GetName(),
-						ContextId: returnedContextID,
-					},
-					UpdateMask: &fieldmaskpb.FieldMask{
-						Paths: []string{"context_id"},
-					},
-				}); updateErr != nil {
-					alog.Errorf(
-						ctx,
-						"failed to persist cron context target=%s cron=%s context=%s err=%T %v",
-						normalizeAgentTarget(cfg.AgentTarget),
-						cron.GetName(),
-						returnedContextID,
-						updateErr,
-						updateErr,
-					)
-				}
-			}
 			if callErr != nil {
 				err := callErr
 				if st, ok := status.FromError(err); ok {
@@ -236,6 +273,42 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 					ownerID,
 					err,
 					err,
+				)
+				return
+			}
+
+			contextID = mergeContextID(contextID, returnedContextID)
+			now := timestamppb.Now()
+
+			update := &pb.Cron{
+				Name:        cron.GetName(),
+				ContextId:   contextID,
+				LastRunTime: now,
+			}
+			updateMaskPaths := []string{"last_run_time"}
+
+			if cron.GetContextId() != contextID && contextID != "" {
+				updateMaskPaths = append(updateMaskPaths, "context_id")
+			}
+			if cron.GetType() == pb.Cron_TYPE_AT {
+				update.State = pb.Cron_STATE_ARCHIVED
+				update.ArchiveTime = now
+				updateMaskPaths = append(updateMaskPaths, "state", "archive_time")
+			}
+
+			if _, updateErr := service.UpdateCron(newCtx, &pb.UpdateCronRequest{
+				Cron: update,
+				UpdateMask: &fieldmaskpb.FieldMask{
+					Paths: updateMaskPaths,
+				},
+			}); updateErr != nil {
+				alog.Errorf(
+					ctx,
+					"failed to persist cron execution state target=%s cron=%s err=%T %v",
+					normalizeAgentTarget(cfg.AgentTarget),
+					cron.GetName(),
+					updateErr,
+					updateErr,
 				)
 			}
 		}()

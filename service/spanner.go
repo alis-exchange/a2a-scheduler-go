@@ -138,13 +138,16 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 	validator := validation.NewValidator()
 	validator.MessageIsPopulated("cron", req.GetCron() != nil)
 	validator.String("cron.prompt", req.GetCron().GetPrompt()).IsPopulated()
-	validator.String("cron.timezone", req.GetCron().GetTimezone()).IsPopulated()
 	validator.Enum("cron.type", req.GetCron().GetType()).IsOneof(pb.Cron_TYPE_CRON, pb.Cron_TYPE_AT)
 	validator.If(validator.Enum("cron.type", req.GetCron().GetType()).Is(pb.Cron_TYPE_CRON)).Then(
+		validator.String("cron.timezone", req.GetCron().GetTimezone()).IsPopulated(),
 		validator.String("expr", req.GetCron().GetExpr()).IsPopulated(),
 	)
 	validator.If(validator.Enum("cron.type", req.GetCron().GetType()).Is(pb.Cron_TYPE_AT)).Then(
 		validator.Timestamp("cron.at", req.GetCron().GetAt()).IsPopulated(),
+	)
+	validator.If(validator.Enum("cron.type", req.GetCron().GetType()).Is(pb.Cron_TYPE_AT)).Then(
+		validator.String("cron.initial_prompt", req.GetCron().GetInitialPrompt()).IsEmpty(),
 	)
 	if err := validator.Validate(); err != nil {
 		return nil, err
@@ -226,6 +229,9 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 	now := timestamppb.Now()
 	req.GetCron().CreateTime = now
 	req.GetCron().UpdateTime = now
+	req.GetCron().State = pb.Cron_STATE_ACTIVE
+	req.GetCron().ArchiveTime = nil
+	req.GetCron().LastRunTime = nil
 
 	// Set owner and email from authorizer details
 	req.GetCron().Owner = az.Identity.UserName()
@@ -468,6 +474,9 @@ func (s *SpannerService) RunCron(ctx context.Context, req *pb.RunCronRequest) (*
 	az.AddPolicy(policy)
 	if err = az.AuthorizeRpc(); err != nil {
 		return nil, err
+	}
+	if cron.GetState() == pb.Cron_STATE_ARCHIVED {
+		return nil, status.Error(codes.FailedPrecondition, "archived cron cannot be run")
 	}
 
 	switch cron.GetType() {
