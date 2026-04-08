@@ -16,12 +16,12 @@ This project contains a lightweight Go library for developers supporting the [a2
 
 ## Packages
 
-| Package                                                     | Role                                                                                                                                                                                                                                                                                         |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`go.alis.build/a2a/extension/scheduler/service`](service/) | [`SpannerService`](service/spanner.go), [`NewSpannerService`](service/spanner.go), and [`(*SpannerService).Register`](service/spanner.go) for the built-in Google Cloud Spanner + IAM implementation and gRPC registration.                                                             |
-| [`go.alis.build/a2a/extension/scheduler/a2asrv`](a2asrv/)   | [`AgentExtension`](a2asrv/extension.go) ([`a2a.AgentExtension`](https://pkg.go.dev/github.com/a2aproject/a2a-go/v2/a2a#AgentExtension)) for advertising extension support.                                                                                                                    |
+| Package                                                     | Role                                                                                                                                                                                                                                                                                   |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`go.alis.build/a2a/extension/scheduler/service`](service/) | [`SpannerService`](service/spanner.go), [`NewSpannerService`](service/spanner.go), and [`(*SpannerService).Register`](service/spanner.go) for the built-in Google Cloud Spanner + IAM implementation and gRPC registration.                                                            |
+| [`go.alis.build/a2a/extension/scheduler/a2asrv`](a2asrv/)   | [`AgentExtension`](a2asrv/extension.go) ([`a2a.AgentExtension`](https://pkg.go.dev/github.com/a2aproject/a2a-go/v2/a2a#AgentExtension)) for advertising extension support.                                                                                                             |
 | [`go.alis.build/a2a/extension/scheduler/handler`](handler/) | [`NewCronHandler`](handler/handler.go) for the core execution handler, plus [`Register`](handler/register.go) as a convenience helper for mounting it at [`SchedulerExtensionHandlerPath`](handler/handler.go). Defaults to the local agent gRPC target and supports override options. |
-| [`go.alis.build/a2a/extension/scheduler/jsonrpc`](jsonrpc/) | [`Register`](jsonrpc/register.go), [`NewJSONRPCHandler`](jsonrpc/jsonrpc.go), and options such as [`WithCORS`](jsonrpc/cors.go), plus JSON-RPC error mapping ([`errors.go`](jsonrpc/errors.go)).                                                                                           |
+| [`go.alis.build/a2a/extension/scheduler/jsonrpc`](jsonrpc/) | [`Register`](jsonrpc/register.go), [`NewJSONRPCHandler`](jsonrpc/jsonrpc.go), and options such as [`WithCORS`](jsonrpc/cors.go), plus JSON-RPC error mapping ([`errors.go`](jsonrpc/errors.go)).                                                                                       |
 
 Package-level documentation (design, IAM roles, execution flow) lives in [`service/docs.go`](service/docs.go), [`a2asrv/docs.go`](a2asrv/docs.go), [`handler/docs.go`](handler/docs.go), and [`jsonrpc/docs.go`](jsonrpc/docs.go). Run `go doc -all ./...` locally for the full commentary.
 
@@ -90,22 +90,30 @@ Before you write any application wiring, decide where the extension state and ex
 - **Cloud Run / HTTP endpoint** receives scheduler callbacks at the cron handler path.
 - **Service account + audience** are used to mint the OIDC token attached to each scheduled callback.
 
-We suggest keeping the scheduler resources in a dedicated extension module so the runtime contract is visible in one place:
+The `alis.build/alis/build/ge/agent/v2/infra` setup keeps the scheduler resources in a dedicated module, alongside the other agent persistence modules:
 
 ```text
 infra/
   main.tf
   apis.tf
-  extensions/
+  cloudrun.tf
+  spanner.tf
+  storage.tf
+  variables.tf
+  modules/
+    alis.adk.sessions.v1/
+      main.tf
+    alis.a2a.extension.history.v1/
+      main.tf
     alis.a2a.extension.scheduler.v1/
       main.tf
 ```
 
-The root module wires the scheduler extension like this:
+`infra/main.tf` wires the scheduler module like this:
 
 ```hcl
 module "alis_a2a_extension_scheduler_v1" {
-  source = "./extensions/alis.a2a.extension.scheduler.v1"
+  source = "./modules/alis.a2a.extension.scheduler.v1"
 
   alis_os_project               = var.ALIS_OS_PROJECT
   alis_region                   = var.ALIS_REGION
@@ -119,7 +127,13 @@ module "alis_a2a_extension_scheduler_v1" {
 }
 ```
 
-Inside `extensions/alis.a2a.extension.scheduler.v1/main.tf`, provision the Cloud Run invoker binding, Cloud Tasks queue, and Spanner table aligned with `SpannerService` expectations:
+That root infra also establishes the rest of the scheduler runtime contract:
+
+- `apis.tf` enables `aiplatform.googleapis.com`, `cloudscheduler.googleapis.com`, and `cloudtasks.googleapis.com`.
+- `cloudrun.tf` deploys the agent service as `agent-v2` and runs it as `alis-build@${var.ALIS_OS_PROJECT}.iam.gserviceaccount.com`.
+- `variables.tf` derives `local.neuron = "agent-v2"` and defaults `local.agent_service_url` to `https://agent-v2-${var.ALIS_PROJECT_NR}.${var.ALIS_REGION}.run.app`.
+
+Inside `modules/alis.a2a.extension.scheduler.v1/main.tf`, the scheduler-specific resources aligned with `SpannerService` are:
 
 ```hcl
 resource "google_cloud_run_service_iam_member" "scheduler_invoker" {
@@ -130,7 +144,7 @@ resource "google_cloud_run_service_iam_member" "scheduler_invoker" {
 }
 
 resource "google_cloud_tasks_queue" "scheduler" {
-  name     = "${var.neuron}-scheduler-v1"
+  name     = "${var.neuron}-a2a-scheduler"
   location = var.alis_region
 }
 
@@ -182,14 +196,22 @@ resource "alis_google_spanner_table" "crons" {
 }
 ```
 
+Two details are easy to miss:
+
+- This module does not provision Cloud Scheduler jobs up front. `SpannerService.CreateCron` creates those jobs dynamically at runtime in the project and region you pass in.
+- The Cloud Run invoker grant is for the same `alis-build@...` service account that the deployed service uses, so that identity can both schedule and call the cron handler.
+
 At the end of this step, you should know these concrete values:
 
-| Value | Why it matters |
-| --- | --- |
-| `SpannerProject`, `Instance`, `Database`, `CronTable` | Tells the service where cron metadata lives. |
-| `SchedulingProject`, `SchedulingRegion`, `SchedulingQueue` | Tells the service where to create jobs and one-off tasks. |
-| `ServiceAccount`, `Audience` | Controls the OIDC identity used when GCP calls your agent back. |
-| `TargetUrl` | Must resolve to your mounted cron execution handler. |
+| Value                                    | Why it matters                                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `SpannerProject`, `Instance`, `Database` | In this infra, these come from `ALIS_MANAGED_SPANNER_PROJECT`, `ALIS_MANAGED_SPANNER_INSTANCE`, and `ALIS_MANAGED_SPANNER_DB`. |
+| `CronTable`                              | `${replace(ALIS_OS_PROJECT, "-", "_")}_${replace("agent-v2", "-", "_")}_Crons`                                                 |
+| `SchedulingProject`, `SchedulingRegion`  | In this infra, `ALIS_OS_PROJECT` and `ALIS_REGION`.                                                                            |
+| `SchedulingQueue`                        | `agent-v2-a2a-scheduler`                                                                                                       |
+| `ServiceAccount`                         | `alis-build@${ALIS_OS_PROJECT}.iam.gserviceaccount.com`                                                                        |
+| `Audience`                               | The deployed agent base URL, which in this infra resolves to `local.agent_service_url`.                                        |
+| `TargetUrl`                              | `${local.agent_service_url}/alis.a2a.extension.v1.SchedulerService/handler`                                                    |
 
 ### Step 2: Create the scheduler service with matching values
 
@@ -197,22 +219,29 @@ Once the backing resources exist, wire the runtime service with the exact same v
 
 ```go
 import (
+	"fmt"
+	"os"
+	"strings"
+
+	"go.alis.build/a2a/extension/scheduler/handler"
 	"go.alis.build/a2a/extension/scheduler/service"
 )
 
 schedulerService, err := service.NewSpannerService(ctx, &service.SpannerServiceConfig{
-	SpannerProject:    "SPANNER_PROJECT_ID",
-	SchedulingProject: "SCHEDULING_PROJECT_ID",
-	SchedulingQueue:   "CLOUD_TASKS_QUEUE_NAME",
-	SchedulingRegion:  "GCP_REGION",
-	Instance:          "SPANNER_INSTANCE_ID",
-	Database:          "SPANNER_DATABASE_ID",
-	CronTable:         "CRONS_TABLE_NAME",
-	ServiceAccount:    "triggering-sa@project.iam.gserviceaccount.com",
-	Audience:          "https://your-agent-endpoint.com",
-	TargetUrl:         "https://your-agent-endpoint.com/alis.a2a.extension.v1.SchedulerService/handler",
+	SpannerProject:    os.Getenv("ALIS_MANAGED_SPANNER_PROJECT"),
+	SchedulingProject: os.Getenv("ALIS_OS_PROJECT"),
+	SchedulingQueue:   "agent-v2-a2a-scheduler",
+	SchedulingRegion:  os.Getenv("ALIS_REGION"),
+	Instance:          os.Getenv("ALIS_MANAGED_SPANNER_INSTANCE"),
+	Database:          os.Getenv("ALIS_MANAGED_SPANNER_DB"),
+	CronTable:         fmt.Sprintf("%s_agent_v2_Crons", strings.ReplaceAll(os.Getenv("ALIS_OS_PROJECT"), "-", "_")),
+	ServiceAccount:    fmt.Sprintf("alis-build@%s.iam.gserviceaccount.com", os.Getenv("ALIS_OS_PROJECT")),
+	Audience:          os.Getenv("AGENT_SERVICE_URL"),
+	TargetUrl:         strings.TrimRight(os.Getenv("AGENT_SERVICE_URL"), "/") + handler.HandlerPath,
 })
 ```
+
+If you are following this exact infra, `AGENT_SERVICE_URL` should match the Cloud Run URL exposed by `variables.tf` and `cloudrun.tf`. If you override `AGENT_SERVICE_URL` in Terraform, the runtime config must use the same override.
 
 Two fields deserve extra attention:
 
