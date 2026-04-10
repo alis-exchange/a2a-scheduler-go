@@ -14,7 +14,7 @@ type HTTPRegistrar interface {
 	Handle(pattern string, handler http.Handler)
 }
 
-// HTTPOption configures [SpannerService.RegisterHTTP].
+// HTTPOption configures [SchedulerService.RegisterHTTP].
 type HTTPOption func(*httpConfig)
 
 type httpConfig struct {
@@ -31,7 +31,7 @@ func defaultHTTPConfig() httpConfig {
 	}
 }
 
-// WithHandlerOptions forwards options to [handler.Register] when [SpannerService.RegisterHTTP]
+// WithHandlerOptions forwards options to [handler.Register] when [SchedulerService.RegisterHTTP]
 // mounts the cron execution callback at [handler.HandlerPath].
 func WithHandlerOptions(opts ...handler.Option) HTTPOption {
 	return func(cfg *httpConfig) {
@@ -39,7 +39,7 @@ func WithHandlerOptions(opts ...handler.Option) HTTPOption {
 	}
 }
 
-// WithJSONRPCOptions forwards options to [jsonrpc.Register] when [SpannerService.RegisterHTTP]
+// WithJSONRPCOptions forwards options to [jsonrpc.Register] when [SchedulerService.RegisterHTTP]
 // mounts the scheduler JSON-RPC management API at [jsonrpc.SchedulerJsonRpcExtensionPath].
 func WithJSONRPCOptions(opts ...jsonrpc.JSONRPCHandlerOption) HTTPOption {
 	return func(cfg *httpConfig) {
@@ -61,13 +61,13 @@ func WithoutJSONRPC() HTTPOption {
 	}
 }
 
-// RegisterGRPC wires SpannerService into a gRPC server or any other ServiceRegistrar.
-func (s *SpannerService) RegisterGRPC(registrar grpc.ServiceRegistrar) {
+// RegisterGRPC wires SchedulerService into a gRPC server or any other ServiceRegistrar.
+func (s *SchedulerService) RegisterGRPC(registrar grpc.ServiceRegistrar) {
 	pb.RegisterSchedulerServiceServer(registrar, s)
 }
 
 // RegisterHTTP mounts the scheduler HTTP surfaces on a method-aware mux.
-func (s *SpannerService) RegisterHTTP(mux HTTPRegistrar, opts ...HTTPOption) {
+func (s *SchedulerService) RegisterHTTP(mux HTTPRegistrar, opts ...HTTPOption) {
 	cfg := defaultHTTPConfig()
 	for _, opt := range opts {
 		if opt != nil {

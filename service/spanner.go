@@ -34,8 +34,8 @@ const (
 	roleCronOwner = "roles/cron.owner"
 )
 
-// SpannerServiceConfig selects the Spanner database and table names used by [SpannerService].
-type SpannerServiceConfig struct {
+// SchedulerServiceConfig selects the Spanner database and table names used by [SchedulerService].
+type SchedulerServiceConfig struct {
 	SpannerProject    string // GCP project id for cloud spanner database resources
 	SchedulingProject string // GCP project id for scheduling resources
 	SchedulingQueue   string // Cloud Tasks Queue for scheduling crons
@@ -49,21 +49,21 @@ type SpannerServiceConfig struct {
 	TargetUrl         string // Target URL for triggering crongs.
 }
 
-var _ pb.SchedulerServiceServer = (*SpannerService)(nil)
+var _ pb.SchedulerServiceServer = (*SchedulerService)(nil)
 
-// SpannerService is an implementation of [pb.SchedulerServiceServer] for managing Crons via Google Cloud Spanner.
-type SpannerService struct {
+// SchedulerService is an implementation of [pb.SchedulerServiceServer] for managing Crons via Google Cloud Spanner.
+type SchedulerService struct {
 	db             *spanner.Client
 	cloudTasks     *cloudtasks.Client
 	cloudScheduler *cloudscheduler.CloudSchedulerClient
 	authorizer     *iam.IAM
-	config         *SpannerServiceConfig
+	config         *SchedulerServiceConfig
 	pb.UnimplementedSchedulerServiceServer
 }
 
-// NewSpannerService constructs a [SpannerService] with a Spanner client and IAM authorizer wired to
+// NewSchedulerService constructs a [SchedulerService] with a Spanner client and IAM authorizer wired to
 // the SchedulerService RPC names used by this module.
-func NewSpannerService(ctx context.Context, config *SpannerServiceConfig) (*SpannerService, error) {
+func NewSchedulerService(ctx context.Context, config *SchedulerServiceConfig) (*SchedulerService, error) {
 	dbName := fmt.Sprintf("projects/%s/instances/%s/databases/%s", config.SpannerProject, config.Instance, config.Database)
 
 	db, err := spanner.NewClientWithConfig(ctx, dbName, spanner.ClientConfig{
@@ -108,7 +108,7 @@ func NewSpannerService(ctx context.Context, config *SpannerServiceConfig) (*Span
 		return nil, err
 	}
 
-	return &SpannerService{
+	return &SchedulerService{
 		db:             db,
 		cloudScheduler: cloudScheduler,
 		cloudTasks:     cloudTasks,
@@ -116,9 +116,8 @@ func NewSpannerService(ctx context.Context, config *SpannerServiceConfig) (*Span
 		authorizer:     authorizer,
 	}, nil
 }
-
 // CreateCron implements the [Service.CreateCron] method.
-func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronRequest) (*pb.Cron, error) {
+func (s *SchedulerService) CreateCron(ctx context.Context, req *pb.CreateCronRequest) (*pb.Cron, error) {
 	// Authorize
 	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
 	if err != nil {
@@ -258,7 +257,7 @@ func (s *SpannerService) CreateCron(ctx context.Context, req *pb.CreateCronReque
 }
 
 // UpdateCron implements the [Service.UpdateCron] method.
-func (s *SpannerService) UpdateCron(ctx context.Context, req *pb.UpdateCronRequest) (*pb.Cron, error) {
+func (s *SchedulerService) UpdateCron(ctx context.Context, req *pb.UpdateCronRequest) (*pb.Cron, error) {
 	// Validation
 	validator := validation.NewValidator()
 	validator.MessageIsPopulated("cron", req.GetCron() != nil)
@@ -301,7 +300,7 @@ func (s *SpannerService) UpdateCron(ctx context.Context, req *pb.UpdateCronReque
 }
 
 // GetCron implements the [Service.GetCron] method.
-func (s *SpannerService) GetCron(ctx context.Context, req *pb.GetCronRequest) (*pb.Cron, error) {
+func (s *SchedulerService) GetCron(ctx context.Context, req *pb.GetCronRequest) (*pb.Cron, error) {
 	// Authorize
 	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
 	if err != nil {
@@ -330,7 +329,7 @@ func (s *SpannerService) GetCron(ctx context.Context, req *pb.GetCronRequest) (*
 }
 
 // ListCrons implements the [Service.ListCrons] method.
-func (s *SpannerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest) (*pb.ListCronsResponse, error) {
+func (s *SchedulerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest) (*pb.ListCronsResponse, error) {
 	// Authorize
 	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
 	if err != nil {
@@ -397,7 +396,7 @@ func (s *SpannerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest
 }
 
 // DeleteCron implements the [Service.DeleteCron] method.
-func (s *SpannerService) DeleteCron(ctx context.Context, req *pb.DeleteCronRequest) (*emptypb.Empty, error) {
+func (s *SchedulerService) DeleteCron(ctx context.Context, req *pb.DeleteCronRequest) (*emptypb.Empty, error) {
 	// Validation
 	validator := validation.NewValidator()
 	validator.String("name", req.GetName()).IsPopulated().Matches(cronRegex)
@@ -449,7 +448,7 @@ func (s *SpannerService) DeleteCron(ctx context.Context, req *pb.DeleteCronReque
 }
 
 // RunCron implements the [Service.RunCron] method.
-func (s *SpannerService) RunCron(ctx context.Context, req *pb.RunCronRequest) (*pb.RunCronResponse, error) {
+func (s *SchedulerService) RunCron(ctx context.Context, req *pb.RunCronRequest) (*pb.RunCronResponse, error) {
 	// Validation
 	validator := validation.NewValidator()
 	validator.String("id", req.GetId()).IsPopulated()
@@ -496,7 +495,7 @@ func (s *SpannerService) RunCron(ctx context.Context, req *pb.RunCronRequest) (*
 
 // readCron loads the Cron and Policy columns for a cron primary key, or returns the Spanner error
 // (typically NotFound if the row does not exist).
-func (s *SpannerService) readCron(ctx context.Context, name string) (*pb.Cron, *iampb.Policy, error) {
+func (s *SchedulerService) readCron(ctx context.Context, name string) (*pb.Cron, *iampb.Policy, error) {
 	row, err := s.db.Single().ReadRow(ctx, s.config.CronTable, spanner.Key{name}, []string{"Cron", "Policy"})
 	if err != nil {
 		return nil, nil, err
