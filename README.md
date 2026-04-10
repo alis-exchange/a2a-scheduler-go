@@ -251,8 +251,10 @@ Two fields deserve extra attention:
 Register it on your gRPC server without importing the generated scheduler proto package:
 
 ```go
+import "go.alis.build/a2a/extension/scheduler"
+
 grpcServer := grpc.NewServer()
-schedulerService.Register(grpcServer)
+scheduler.RegisterGRPC(grpcServer, schedulerService)
 ```
 
 ### Step 3: Mount the management and execution surfaces
@@ -262,39 +264,56 @@ The extension exposes two separate HTTP concerns:
 - **Management API** for clients that create, list, update, or delete crons.
 - **Execution callback** for Cloud Scheduler and Cloud Tasks when it is time to run one.
 
-Mount the execution callback first, because `TargetUrl` depends on it:
+If you want the standard setup, mount both HTTP surfaces from the root package:
+
+```go
+import "go.alis.build/a2a/extension/scheduler"
+
+// Registers:
+// - POST /alis.a2a.extension.v1.SchedulerService/handler
+// - POST|OPTIONS /alis.a2a.extension.v1.SchedulerService
+scheduler.RegisterHTTP(mux, schedulerService)
+```
+
+If the cron execution handler needs to invoke a different A2A gRPC endpoint than the default local target (`localhost:8085`), forward the handler-specific options through the root helper:
 
 ```go
 import (
+	"go.alis.build/a2a/extension/scheduler"
 	schedulerhandler "go.alis.build/a2a/extension/scheduler/handler"
 )
 
-// Cloud Scheduler / Cloud Tasks POST here when a cron fires.
-schedulerhandler.Register(mux, schedulerService)
-```
-
-If the handler needs to invoke a different A2A gRPC endpoint than the default local target (`localhost:8085`), override it explicitly:
-
-```go
-schedulerhandler.Register(
+scheduler.RegisterHTTP(
 	mux,
 	schedulerService,
-	schedulerhandler.WithAgentTarget("example.internal:8443"),
+	scheduler.WithHandlerOptions(
+		schedulerhandler.WithAgentTarget("example.internal:8443"),
+	),
 )
 ```
 
-Then expose the optional JSON-RPC management API:
+If you want only one HTTP surface, disable the other explicitly:
 
 ```go
-import "go.alis.build/a2a/extension/scheduler/jsonrpc"
+import "go.alis.build/a2a/extension/scheduler"
 
-jsonrpc.Register(mux, schedulerService)
+// Only the execution callback.
+scheduler.RegisterHTTP(mux, schedulerService, scheduler.WithoutJSONRPC())
 ```
 
-If browser clients will call the JSON-RPC endpoint across origins, enable CORS intentionally rather than by accident:
+If browser clients will call the JSON-RPC endpoint across origins, forward JSON-RPC options intentionally rather than by accident:
 
 ```go
-jsonrpc.Register(mux, schedulerService, jsonrpc.WithCORS())
+import (
+	"go.alis.build/a2a/extension/scheduler"
+	schedulerjsonrpc "go.alis.build/a2a/extension/scheduler/jsonrpc"
+)
+
+scheduler.RegisterHTTP(
+	mux,
+	schedulerService,
+	scheduler.WithJSONRPCOptions(schedulerjsonrpc.WithCORS()),
+)
 ```
 
 For routers that do not support Go 1.22 method-aware patterns, mount [`handler.NewCronHandler`](handler/handler.go) and [`jsonrpc.NewJSONRPCHandler`](jsonrpc/jsonrpc.go) directly.
