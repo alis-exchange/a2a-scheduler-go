@@ -13,7 +13,6 @@ import (
 	"github.com/mennanov/fmutils"
 	"go.alis.build/iam/v2"
 	"go.alis.build/validation"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -60,11 +59,6 @@ type SpannerService struct {
 	authorizer     *iam.IAM
 	config         *SpannerServiceConfig
 	pb.UnimplementedSchedulerServiceServer
-}
-
-// Register wires SpannerService into a gRPC server or any other ServiceRegistrar.
-func (s *SpannerService) Register(registrar grpc.ServiceRegistrar) {
-	pb.RegisterSchedulerServiceServer(registrar, s)
 }
 
 // NewSpannerService constructs a [SpannerService] with a Spanner client and IAM authorizer wired to

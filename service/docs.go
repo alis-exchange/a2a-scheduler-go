@@ -9,8 +9,9 @@
 //   - roles/open - anonymous CreateCron and ListCrons (see code for exact RPC names).
 //   - roles/cron.owner - GetCron, UpdateCron, DeleteCron, and RunCron for callers bound on the cron.
 //
-// [SpannerService.Register] wraps the generated gRPC registration helper so callers can mount the
-// service without importing the generated protobuf package directly.
+// [SpannerService.RegisterGRPC] and [SpannerService.RegisterHTTP] mount the gRPC and HTTP
+// transports without requiring callers to import the generated protobuf package, handler,
+// or jsonrpc subpackages directly.
 //
 // Cron names must match `^crons/[a-z0-9-]{2,50}$`. Recurring crons are materialized as Cloud Scheduler
 // jobs; one-time crons are materialized as Cloud Tasks. Cron metadata and IAM policy are stored in Spanner.

@@ -3,5 +3,6 @@
 // In addition to extension metadata, the root package provides convenience
 // registration helpers such as [RegisterGRPC] and [RegisterHTTP] so callers do
 // not need to import the handler and jsonrpc subpackages just to mount the
-// standard scheduler surfaces.
+// standard scheduler surfaces. Callers that hold a concrete scheduler service
+// instance can also use its RegisterGRPC and RegisterHTTP methods directly.
 package scheduler
