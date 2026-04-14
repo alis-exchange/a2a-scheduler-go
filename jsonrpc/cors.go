@@ -21,9 +21,13 @@ func defaultCORSConfig() corsConfig {
 		allowHeaders: strings.Join([]string{
 			"Content-Type",
 			"Authorization",
+			iam.AlisAuthenticatedUserIDHeader,
+			iam.AlisAuthenticatedUserEmailHeader,
+			iam.AlisAuthenticatedIdentityCtxHeader,
 			iam.AuthHeader,
 			iam.AlisUserIDHeader,
 			iam.AlisUserEmailHeader,
+			iam.AlisIdentityContextHeader,
 		}, ", "),
 	}
 }

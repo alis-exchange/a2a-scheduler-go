@@ -6,6 +6,7 @@ import (
 	"go.alis.build/a2a/extension/scheduler/handler"
 	"go.alis.build/a2a/extension/scheduler/jsonrpc"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
+	"go.alis.build/iam/v3"
 	"google.golang.org/grpc"
 )
 
@@ -64,6 +65,12 @@ func WithoutJSONRPC() HTTPOption {
 // RegisterGRPC wires SchedulerService into a gRPC server or any other ServiceRegistrar.
 func (s *SchedulerService) RegisterGRPC(registrar grpc.ServiceRegistrar) {
 	pb.RegisterSchedulerServiceServer(registrar, s)
+}
+
+// UnaryServerInterceptor returns the IAM v3 interceptor that attaches an already-authenticated
+// transport identity to inbound gRPC calls before service authorization runs.
+func UnaryServerInterceptor(resolve iam.GRPCAuthenticatedIdentityResolver) grpc.UnaryServerInterceptor {
+	return iam.UnaryServerInterceptor(resolve)
 }
 
 // RegisterHTTP mounts the scheduler HTTP surfaces on a method-aware mux.

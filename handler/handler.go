@@ -15,6 +15,7 @@ import (
 	"go.alis.build/alog"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 	"go.alis.build/iam/v3"
+	iamedge "go.alis.build/iam/v3/edge"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
@@ -92,12 +93,21 @@ func callAgent(ctx context.Context, target, prompt, contextID, userID, email, to
 		return "", err
 	}
 
-	ctx = a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams{
-		iam.AuthHeader:          {"Bearer " + token},
-		iam.AlisUserIDHeader:    {userID},
-		iam.AlisUserEmailHeader: {email},
-		a2a.SvcParamExtensions:  {HistoryExtensionURI},
-	})
+	authenticated := iam.NewIdentity(userID, email)
+	headers := http.Header{}
+	if err := iamedge.PrepareForwardedHeaders(headers, authenticated, nil); err != nil {
+		return "", err
+	}
+	serviceParams := a2aclient.ServiceParams{
+		a2a.SvcParamExtensions: {HistoryExtensionURI},
+	}
+	for key, values := range headers {
+		serviceParams[key] = append([]string(nil), values...)
+	}
+	if token != "" {
+		serviceParams[iam.AuthHeader] = []string{"Bearer " + token}
+	}
+	ctx = a2aclient.AttachServiceParams(ctx, serviceParams)
 
 	message := a2a.NewMessage(
 		a2a.MessageRoleUser,
@@ -154,7 +164,7 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 	cfg := newConfig(opts...)
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
+		ctx := iam.ContextWithHTTPRequest(r.Context(), r)
 
 		// The request body is expected to contain a single cron-id string parameter.
 		var body struct {
