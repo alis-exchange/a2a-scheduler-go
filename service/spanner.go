@@ -11,7 +11,7 @@ import (
 	"cloud.google.com/go/spanner"
 	"github.com/google/uuid"
 	"github.com/mennanov/fmutils"
-	"go.alis.build/iam/v2"
+	"go.alis.build/iam/v3"
 	"go.alis.build/validation"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -116,14 +116,15 @@ func NewSchedulerService(ctx context.Context, config *SchedulerServiceConfig) (*
 		authorizer:     authorizer,
 	}, nil
 }
+
 // CreateCron implements the [Service.CreateCron] method.
 func (s *SchedulerService) CreateCron(ctx context.Context, req *pb.CreateCronRequest) (*pb.Cron, error) {
 	// Authorize
-	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
+	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_CreateCron_FullMethodName)
 	if err != nil {
 		return nil, err
 	}
-	if err = az.AuthorizeRpc(); err != nil {
+	if err = az.Require(); err != nil {
 		return nil, err
 	}
 
@@ -227,8 +228,8 @@ func (s *SchedulerService) CreateCron(ctx context.Context, req *pb.CreateCronReq
 	req.GetCron().LastRunTime = nil
 
 	// Set owner and email from authorizer details
-	req.GetCron().Owner = az.Identity.UserName()
-	req.GetCron().Email = az.Identity.Email()
+	req.GetCron().Owner = az.Caller().UserName()
+	req.GetCron().Email = az.Caller().Email()
 
 	// Insert new resource
 	var mutations []*spanner.Mutation
@@ -236,7 +237,7 @@ func (s *SchedulerService) CreateCron(ctx context.Context, req *pb.CreateCronReq
 		Bindings: []*iampb.Binding{
 			{
 				Role:    roleCronOwner,
-				Members: []string{az.Identity.PolicyMember()},
+				Members: []string{az.Caller().PolicyMember()},
 			},
 		},
 	}
@@ -269,7 +270,7 @@ func (s *SchedulerService) UpdateCron(ctx context.Context, req *pb.UpdateCronReq
 	}
 
 	// Authorize
-	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
+	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_UpdateCron_FullMethodName)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +279,7 @@ func (s *SchedulerService) UpdateCron(ctx context.Context, req *pb.UpdateCronReq
 		return nil, err
 	}
 	az.AddPolicy(policy)
-	if err = az.AuthorizeRpc(); err != nil {
+	if err = az.Require(); err != nil {
 		return nil, err
 	}
 
@@ -302,7 +303,7 @@ func (s *SchedulerService) UpdateCron(ctx context.Context, req *pb.UpdateCronReq
 // GetCron implements the [Service.GetCron] method.
 func (s *SchedulerService) GetCron(ctx context.Context, req *pb.GetCronRequest) (*pb.Cron, error) {
 	// Authorize
-	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
+	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_GetCron_FullMethodName)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create authorizer: %s", err.Error())
 	}
@@ -322,7 +323,7 @@ func (s *SchedulerService) GetCron(ctx context.Context, req *pb.GetCronRequest) 
 
 	// Check if the requester has access to this resource
 	az.AddPolicy(policy)
-	if err = az.AuthorizeRpc(); err != nil {
+	if err = az.Require(); err != nil {
 		return nil, err
 	}
 	return cron, nil
@@ -331,18 +332,18 @@ func (s *SchedulerService) GetCron(ctx context.Context, req *pb.GetCronRequest) 
 // ListCrons implements the [Service.ListCrons] method.
 func (s *SchedulerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest) (*pb.ListCronsResponse, error) {
 	// Authorize
-	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
+	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_ListCrons_FullMethodName)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create authorizer: %s", err.Error())
 	}
 
-	if err = az.AuthorizeRpc(); err != nil {
+	if err = az.Require(); err != nil {
 		return nil, err
 	}
 
 	// Prepare query statement
 	statement := spanner.NewStatement(`select Cron from ` + s.config.CronTable + " as t")
-	if !az.Identity.IsDeploymentServiceAccount() {
+	if !az.Caller().IsDeploymentServiceAccount() {
 		statement.SQL += `
 			WHERE EXISTS (
 			SELECT 1
@@ -350,7 +351,7 @@ func (s *SchedulerService) ListCrons(ctx context.Context, req *pb.ListCronsReque
 			CROSS JOIN UNNEST(binding.members) AS member
 			WHERE member = @member
 			)`
-		statement.Params["member"] = az.Identity.PolicyMember()
+		statement.Params["member"] = az.Caller().PolicyMember()
 	}
 	statement.SQL += ` order by t.create_time DESC limit @limit offset @offset;`
 
@@ -405,7 +406,7 @@ func (s *SchedulerService) DeleteCron(ctx context.Context, req *pb.DeleteCronReq
 	}
 
 	// Authorize
-	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
+	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_DeleteCron_FullMethodName)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +415,7 @@ func (s *SchedulerService) DeleteCron(ctx context.Context, req *pb.DeleteCronReq
 		return nil, err
 	}
 	az.AddPolicy(policy)
-	if err = az.AuthorizeRpc(); err != nil {
+	if err = az.Require(); err != nil {
 		return nil, err
 	}
 
@@ -457,7 +458,7 @@ func (s *SchedulerService) RunCron(ctx context.Context, req *pb.RunCronRequest) 
 	}
 
 	// Authorize
-	az, ctx, err := s.authorizer.NewAuthorizer(ctx)
+	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_RunCron_FullMethodName)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +468,7 @@ func (s *SchedulerService) RunCron(ctx context.Context, req *pb.RunCronRequest) 
 		return nil, err
 	}
 	az.AddPolicy(policy)
-	if err = az.AuthorizeRpc(); err != nil {
+	if err = az.Require(); err != nil {
 		return nil, err
 	}
 	if cron.GetState() == pb.Cron_STATE_ARCHIVED {

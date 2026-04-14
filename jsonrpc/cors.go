@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"go.alis.build/iam/v2"
+	"go.alis.build/iam/v3"
 )
 
 // corsConfig holds Access-Control-* values when CORS is enabled on [jsonrpcHandler].
@@ -21,7 +21,7 @@ func defaultCORSConfig() corsConfig {
 		allowHeaders: strings.Join([]string{
 			"Content-Type",
 			"Authorization",
-			iam.AlisForwardingHeader,
+			iam.AuthHeader,
 			iam.AlisUserIDHeader,
 			iam.AlisUserEmailHeader,
 		}, ", "),

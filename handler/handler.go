@@ -14,7 +14,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"go.alis.build/alog"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
-	"go.alis.build/iam/v2"
+	"go.alis.build/iam/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
@@ -93,10 +93,10 @@ func callAgent(ctx context.Context, target, prompt, contextID, userID, email, to
 	}
 
 	ctx = a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams{
-		iam.AlisForwardingHeader: {"Bearer " + token},
-		iam.AlisUserIDHeader:     {userID},
-		iam.AlisUserEmailHeader:  {email},
-		a2a.SvcParamExtensions:   {HistoryExtensionURI},
+		iam.AuthHeader:          {"Bearer " + token},
+		iam.AlisUserIDHeader:    {userID},
+		iam.AlisUserEmailHeader: {email},
+		a2a.SvcParamExtensions:  {HistoryExtensionURI},
 	})
 
 	message := a2a.NewMessage(

@@ -13,7 +13,7 @@ require (
 	github.com/mennanov/fmutils v0.3.6
 	go.alis.build/alog v0.0.19
 	go.alis.build/common v1.1.2
-	go.alis.build/iam/v2 v2.4.0
+	go.alis.build/iam/v3 v3.0.1
 	go.alis.build/validation v1.0.7
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
@@ -36,7 +36,6 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.14 // indirect
 	github.com/googleapis/gax-go/v2 v2.18.0 // indirect
