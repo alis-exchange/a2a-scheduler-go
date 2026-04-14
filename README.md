@@ -292,6 +292,21 @@ scheduler.RegisterHTTP(
 )
 ```
 
+If the downstream agent expects `iam/v3.1+` caller forwarding semantics, the handler should forward
+the scheduler service as the authenticated principal and the cron owner as the caller. By default the
+handler derives the authenticated service account from `ALIS_OS_PROJECT`. Override it explicitly when
+needed:
+
+```go
+scheduler.RegisterHTTP(
+	mux,
+	schedulerService,
+	scheduler.WithHandlerOptions(
+		schedulerhandler.WithAuthenticatedServiceAccount("scheduler@my-project.iam.gserviceaccount.com"),
+	),
+)
+```
+
 If you want only one HTTP surface, disable the other explicitly:
 
 ```go

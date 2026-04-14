@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
-	"github.com/golang-jwt/jwt/v5"
 	"go.alis.build/alog"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 	"go.alis.build/iam/v3"
@@ -37,7 +37,8 @@ type response struct {
 
 // Config configures how the cron handler connects to the downstream agent.
 type Config struct {
-	AgentTarget string
+	AgentTarget           string
+	AuthenticatedIdentity *iam.Identity
 }
 
 // Option mutates a Config during handler construction.
@@ -50,10 +51,33 @@ func WithAgentTarget(target string) Option {
 	}
 }
 
+// WithAuthenticatedIdentity overrides the trusted authenticated service identity used when the
+// cron handler forwards requests to the downstream A2A agent.
+func WithAuthenticatedIdentity(id, email string) Option {
+	return func(cfg *Config) {
+		cfg.AuthenticatedIdentity = iam.NewIdentity(id, email)
+	}
+}
+
+// WithAuthenticatedServiceAccount sets the authenticated service identity from a service account email.
+func WithAuthenticatedServiceAccount(email string) Option {
+	return WithAuthenticatedIdentity(email, email)
+}
+
+func defaultAuthenticatedIdentity() *iam.Identity {
+	projectID := os.Getenv("ALIS_OS_PROJECT")
+	if projectID == "" {
+		return nil
+	}
+	email := fmt.Sprintf("alis-build@%s.iam.gserviceaccount.com", projectID)
+	return iam.NewIdentity(email, email)
+}
+
 // newConfig builds a Config from the provided options and defaults.
 func newConfig(opts ...Option) *Config {
 	cfg := &Config{
-		AgentTarget: DefaultAgentTarget,
+		AgentTarget:           DefaultAgentTarget,
+		AuthenticatedIdentity: defaultAuthenticatedIdentity(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -75,7 +99,7 @@ func normalizeAgentTarget(target string) string {
 }
 
 // callAgent forwards the cron prompt to the configured A2A agent as the owner.
-func callAgent(ctx context.Context, target, prompt, contextID, userID, email, token string) (string, error) {
+func callAgent(ctx context.Context, target, prompt, contextID string, authenticated *iam.Identity, userID, email string) (string, error) {
 	endpoints := []*a2a.AgentInterface{
 		{
 			URL:             normalizeAgentTarget(target),
@@ -93,9 +117,12 @@ func callAgent(ctx context.Context, target, prompt, contextID, userID, email, to
 		return "", err
 	}
 
-	authenticated := iam.NewIdentity(userID, email)
+	if authenticated == nil {
+		return "", fmt.Errorf("authenticated service identity is required; use handler.WithAuthenticatedIdentity or set ALIS_OS_PROJECT")
+	}
+	caller := iam.NewIdentity(userID, email)
 	headers := http.Header{}
-	if err := iamedge.PrepareForwardedHeaders(headers, authenticated, nil); err != nil {
+	if err := iamedge.PrepareForwardedHeaders(headers, authenticated, caller); err != nil {
 		return "", err
 	}
 	serviceParams := a2aclient.ServiceParams{
@@ -103,9 +130,6 @@ func callAgent(ctx context.Context, target, prompt, contextID, userID, email, to
 	}
 	for key, values := range headers {
 		serviceParams[key] = append([]string(nil), values...)
-	}
-	if token != "" {
-		serviceParams[iam.AuthHeader] = []string{"Bearer " + token}
 	}
 	ctx = a2aclient.AttachServiceParams(ctx, serviceParams)
 
@@ -196,17 +220,6 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 		}
 		ownerID := strings.Split(cron.GetOwner(), "/")[1]
 
-		// Prepare the forwarded authorization token for the downstream agent request.
-		jwt := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-			"sub":   ownerID,
-			"email": cron.GetEmail(),
-		})
-		token, err := jwt.SignedString([]byte("authz-key")) // Internally trusted
-		if err != nil {
-			handleError(ctx, w, err.Error())
-			return
-		}
-
 		// Invoke agent
 		newCtx := context.WithoutCancel(ctx)
 		go func() {
@@ -220,9 +233,9 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 					cfg.AgentTarget,
 					cron.GetInitialPrompt(),
 					"",
+					cfg.AuthenticatedIdentity,
 					ownerID,
 					cron.GetEmail(),
-					token,
 				)
 				if initialErr != nil {
 					callErr := initialErr
@@ -257,9 +270,9 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 				cfg.AgentTarget,
 				cron.GetPrompt(),
 				contextID,
+				cfg.AuthenticatedIdentity,
 				ownerID,
 				cron.GetEmail(),
-				token,
 			)
 			if callErr != nil {
 				err := callErr
