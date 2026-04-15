@@ -9,9 +9,10 @@
 //  4. Invokes the local agent with the configured prompt using the A2A protocol.
 //
 // [NewCronHandler] defaults to calling [DefaultAgentTarget] over A2A gRPC and, when
-// ALIS_OS_PROJECT is set, forwards the deployment service account as the authenticated identity.
-// Use [WithAgentTarget] and/or [WithAuthenticatedIdentity] when the scheduler handler and target
-// agent are not co-located or when the authenticated service identity must be set explicitly.
+// ALIS_OS_PROJECT is set, uses the deployment service account identity for local
+// scheduler service calls. Use [WithAgentTarget] and/or [WithAuthenticatedIdentity]
+// when the scheduler handler and target agent are not co-located or when that
+// scheduler identity must be set explicitly.
 // [Register] is a convenience helper that mounts that handler on method-aware muxes such as the
 // Go 1.22+ ServeMux.
 package handler

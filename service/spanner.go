@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mennanov/fmutils"
 	"go.alis.build/iam/v3"
+	authz "go.alis.build/iam/v3/authz"
 	"go.alis.build/validation"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,12 +30,13 @@ import (
 )
 
 const (
-	cronRegex     = `^crons/[a-z0-9-]{2,50}$`
-	roleOpen      = "roles/open"
-	roleCronOwner = "roles/cron.owner"
+	cronRegex      = `^crons/[a-z0-9-]{2,50}$`
+	roleOpen       = "roles/open"
+	roleCronOwner  = "roles/cron.owner"
+	cronsTableName = "Crons"
 )
 
-// SchedulerServiceConfig selects the Spanner database and table names used by [SchedulerService].
+// SchedulerServiceConfig selects the Spanner database and logical table naming used by [SchedulerService].
 type SchedulerServiceConfig struct {
 	SpannerProject    string // GCP project id for cloud spanner database resources
 	SchedulingProject string // GCP project id for scheduling resources
@@ -45,8 +47,8 @@ type SchedulerServiceConfig struct {
 	Audience          string // Target audience for OIDC auth token generation
 	Database          string // Spanner database id
 	DatabaseRole      string // optional Spanner database role for fine-grained access (empty if unused)
-	CronTable         string // table storing Cron + IAM Policy proto columns
-	TargetUrl         string // Target URL for triggering crongs.
+	TablePrefix       string // optional prefix applied to the logical Crons table name
+	TargetUrl         string // Target URL for triggering crons.
 }
 
 var _ pb.SchedulerServiceServer = (*SchedulerService)(nil)
@@ -56,9 +58,22 @@ type SchedulerService struct {
 	db             *spanner.Client
 	cloudTasks     *cloudtasks.Client
 	cloudScheduler *cloudscheduler.CloudSchedulerClient
-	authorizer     *iam.IAM
 	config         *SchedulerServiceConfig
 	pb.UnimplementedSchedulerServiceServer
+}
+
+func init() {
+	// We register these roles globally
+	authz.AddOpenRolePermissions(roleOpen, []string{
+		pb.SchedulerService_CreateCron_FullMethodName,
+		pb.SchedulerService_ListCrons_FullMethodName,
+	})
+	authz.AddRolePermissions(roleCronOwner, []string{
+		pb.SchedulerService_GetCron_FullMethodName,
+		pb.SchedulerService_UpdateCron_FullMethodName,
+		pb.SchedulerService_DeleteCron_FullMethodName,
+		pb.SchedulerService_RunCron_FullMethodName,
+	})
 }
 
 // NewSchedulerService constructs a [SchedulerService] with a Spanner client and IAM authorizer wired to
@@ -84,48 +99,28 @@ func NewSchedulerService(ctx context.Context, config *SchedulerServiceConfig) (*
 		return nil, err
 	}
 
-	authorizer, err := iam.New([]*iam.Role{
-		{
-			Name: roleOpen,
-			Permissions: []string{
-				pb.SchedulerService_CreateCron_FullMethodName,
-				pb.SchedulerService_ListCrons_FullMethodName,
-			},
-			AllUsers: true,
-		},
-		{
-			Name: roleCronOwner,
-			Permissions: []string{
-				pb.SchedulerService_GetCron_FullMethodName,
-				pb.SchedulerService_UpdateCron_FullMethodName,
-				pb.SchedulerService_DeleteCron_FullMethodName,
-				pb.SchedulerService_RunCron_FullMethodName,
-			},
-			AllUsers: false,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	return &SchedulerService{
 		db:             db,
 		cloudScheduler: cloudScheduler,
 		cloudTasks:     cloudTasks,
 		config:         config,
-		authorizer:     authorizer,
 	}, nil
+}
+
+func (s *SchedulerService) cronsTable() string {
+	if s.config.TablePrefix == "" {
+		return cronsTableName
+	}
+	return s.config.TablePrefix + "_" + cronsTableName
 }
 
 // CreateCron implements the [Service.CreateCron] method.
 func (s *SchedulerService) CreateCron(ctx context.Context, req *pb.CreateCronRequest) (*pb.Cron, error) {
 	// Authorize
-	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_CreateCron_FullMethodName)
-	if err != nil {
-		return nil, err
-	}
-	if err = az.Require(); err != nil {
-		return nil, err
+	caller := iam.MustFromContext(ctx)
+	az := authz.MustNew(caller)
+	if !az.HasPermission(pb.SchedulerService_CreateCron_FullMethodName) {
+		return nil, status.Error(codes.PermissionDenied, "permission denied")
 	}
 
 	// Validation
@@ -228,8 +223,8 @@ func (s *SchedulerService) CreateCron(ctx context.Context, req *pb.CreateCronReq
 	req.GetCron().LastRunTime = nil
 
 	// Set owner and email from authorizer details
-	req.GetCron().Owner = az.Caller().UserName()
-	req.GetCron().Email = az.Caller().Email()
+	req.GetCron().Owner = "users/" + caller.ID
+	req.GetCron().Email = caller.Email
 
 	// Insert new resource
 	var mutations []*spanner.Mutation
@@ -237,11 +232,11 @@ func (s *SchedulerService) CreateCron(ctx context.Context, req *pb.CreateCronReq
 		Bindings: []*iampb.Binding{
 			{
 				Role:    roleCronOwner,
-				Members: []string{az.Caller().PolicyMember()},
+				Members: []string{caller.PolicyMember()},
 			},
 		},
 	}
-	mutation := spanner.Insert(s.config.CronTable, []string{"key", "Cron", "Policy"}, []any{req.GetCron().GetName(), req.GetCron(), policy})
+	mutation := spanner.Insert(s.cronsTable(), []string{"key", "Cron", "Policy"}, []any{req.GetCron().GetName(), req.GetCron(), policy})
 	mutations = append(mutations, mutation)
 
 	// Apply mutations in a single transaction
@@ -270,17 +265,14 @@ func (s *SchedulerService) UpdateCron(ctx context.Context, req *pb.UpdateCronReq
 	}
 
 	// Authorize
-	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_UpdateCron_FullMethodName)
-	if err != nil {
-		return nil, err
-	}
+	caller := iam.MustFromContext(ctx)
+	az := authz.MustNew(caller)
 	cron, policy, err := s.readCron(ctx, req.Cron.GetName())
 	if err != nil {
 		return nil, err
 	}
-	az.AddPolicy(policy)
-	if err = az.Require(); err != nil {
-		return nil, err
+	if !az.HasPermission(pb.SchedulerService_UpdateCron_FullMethodName, policy) {
+		return nil, status.Error(codes.PermissionDenied, "permission denied")
 	}
 
 	// Apply update
@@ -293,7 +285,7 @@ func (s *SchedulerService) UpdateCron(ctx context.Context, req *pb.UpdateCronReq
 	cron.UpdateTime = timestamppb.Now()
 
 	// Update db
-	mutation := spanner.Update(s.config.CronTable, []string{"key", "Cron"}, []any{req.GetCron().GetName(), cron})
+	mutation := spanner.Update(s.cronsTable(), []string{"key", "Cron"}, []any{req.GetCron().GetName(), cron})
 	if _, err = s.db.Apply(ctx, []*spanner.Mutation{mutation}); err != nil {
 		return nil, err
 	}
@@ -303,10 +295,8 @@ func (s *SchedulerService) UpdateCron(ctx context.Context, req *pb.UpdateCronReq
 // GetCron implements the [Service.GetCron] method.
 func (s *SchedulerService) GetCron(ctx context.Context, req *pb.GetCronRequest) (*pb.Cron, error) {
 	// Authorize
-	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_GetCron_FullMethodName)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create authorizer: %s", err.Error())
-	}
+	caller := iam.MustFromContext(ctx)
+	az := authz.MustNew(caller)
 
 	// Validation
 	validator := validation.NewValidator()
@@ -322,9 +312,8 @@ func (s *SchedulerService) GetCron(ctx context.Context, req *pb.GetCronRequest) 
 	}
 
 	// Check if the requester has access to this resource
-	az.AddPolicy(policy)
-	if err = az.Require(); err != nil {
-		return nil, err
+	if !az.HasPermission(pb.SchedulerService_GetCron_FullMethodName, policy) {
+		return nil, status.Error(codes.PermissionDenied, "permission denied")
 	}
 	return cron, nil
 }
@@ -332,18 +321,15 @@ func (s *SchedulerService) GetCron(ctx context.Context, req *pb.GetCronRequest) 
 // ListCrons implements the [Service.ListCrons] method.
 func (s *SchedulerService) ListCrons(ctx context.Context, req *pb.ListCronsRequest) (*pb.ListCronsResponse, error) {
 	// Authorize
-	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_ListCrons_FullMethodName)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create authorizer: %s", err.Error())
-	}
-
-	if err = az.Require(); err != nil {
-		return nil, err
+	caller := iam.MustFromContext(ctx)
+	az := authz.MustNew(caller)
+	if !az.HasPermission(pb.SchedulerService_ListCrons_FullMethodName) {
+		return nil, status.Error(codes.PermissionDenied, "permission denied")
 	}
 
 	// Prepare query statement
-	statement := spanner.NewStatement(`select Cron from ` + s.config.CronTable + " as t")
-	if !az.Caller().IsDeploymentServiceAccount() {
+	statement := spanner.NewStatement(`select Cron from ` + s.cronsTable() + " as t")
+	if !caller.IsSystem() {
 		statement.SQL += `
 			WHERE EXISTS (
 			SELECT 1
@@ -351,7 +337,7 @@ func (s *SchedulerService) ListCrons(ctx context.Context, req *pb.ListCronsReque
 			CROSS JOIN UNNEST(binding.members) AS member
 			WHERE member = @member
 			)`
-		statement.Params["member"] = az.Caller().PolicyMember()
+		statement.Params["member"] = caller.PolicyMember()
 	}
 	statement.SQL += ` order by t.create_time DESC limit @limit offset @offset;`
 
@@ -362,6 +348,7 @@ func (s *SchedulerService) ListCrons(ctx context.Context, req *pb.ListCronsReque
 	}
 	statement.Params["limit"] = limit
 	offset := 0
+	var err error
 	if req.GetPageToken() != "" {
 		offset, err = strconv.Atoi(req.GetPageToken())
 		if err != nil {
@@ -406,17 +393,14 @@ func (s *SchedulerService) DeleteCron(ctx context.Context, req *pb.DeleteCronReq
 	}
 
 	// Authorize
-	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_DeleteCron_FullMethodName)
-	if err != nil {
-		return nil, err
-	}
+	caller := iam.MustFromContext(ctx)
+	az := authz.MustNew(caller)
 	cron, policy, err := s.readCron(ctx, req.GetName())
 	if err != nil {
 		return nil, err
 	}
-	az.AddPolicy(policy)
-	if err = az.Require(); err != nil {
-		return nil, err
+	if !az.HasPermission(pb.SchedulerService_DeleteCron_FullMethodName, policy) {
+		return nil, status.Error(codes.PermissionDenied, "permission denied")
 	}
 
 	// Delete scheduler instances
@@ -440,7 +424,7 @@ func (s *SchedulerService) DeleteCron(ctx context.Context, req *pb.DeleteCronReq
 		}
 	}
 
-	m := spanner.Delete(s.config.CronTable, spanner.Key{req.GetName()})
+	m := spanner.Delete(s.cronsTable(), spanner.Key{req.GetName()})
 	if _, err = s.db.Apply(ctx, []*spanner.Mutation{m}); err != nil {
 		return nil, err
 	}
@@ -458,18 +442,15 @@ func (s *SchedulerService) RunCron(ctx context.Context, req *pb.RunCronRequest) 
 	}
 
 	// Authorize
-	az, err := s.authorizer.NewAuthorizer(ctx, pb.SchedulerService_RunCron_FullMethodName)
-	if err != nil {
-		return nil, err
-	}
+	caller := iam.MustFromContext(ctx)
+	az := authz.MustNew(caller)
 
 	cron, policy, err := s.readCron(ctx, fmt.Sprintf("crons/%s", req.GetId()))
 	if err != nil {
 		return nil, err
 	}
-	az.AddPolicy(policy)
-	if err = az.Require(); err != nil {
-		return nil, err
+	if !az.HasPermission(pb.SchedulerService_RunCron_FullMethodName, policy) {
+		return nil, status.Error(codes.PermissionDenied, "permission denied")
 	}
 	if cron.GetState() == pb.Cron_STATE_ARCHIVED {
 		return nil, status.Error(codes.FailedPrecondition, "archived cron cannot be run")
@@ -497,7 +478,7 @@ func (s *SchedulerService) RunCron(ctx context.Context, req *pb.RunCronRequest) 
 // readCron loads the Cron and Policy columns for a cron primary key, or returns the Spanner error
 // (typically NotFound if the row does not exist).
 func (s *SchedulerService) readCron(ctx context.Context, name string) (*pb.Cron, *iampb.Policy, error) {
-	row, err := s.db.Single().ReadRow(ctx, s.config.CronTable, spanner.Key{name}, []string{"Cron", "Policy"})
+	row, err := s.db.Single().ReadRow(ctx, s.cronsTable(), spanner.Key{name}, []string{"Cron", "Policy"})
 	if err != nil {
 		return nil, nil, err
 	}

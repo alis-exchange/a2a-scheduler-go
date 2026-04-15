@@ -67,10 +67,10 @@ func (s *SchedulerService) RegisterGRPC(registrar grpc.ServiceRegistrar) {
 	pb.RegisterSchedulerServiceServer(registrar, s)
 }
 
-// UnaryServerInterceptor returns the IAM v3 interceptor that attaches an already-authenticated
-// transport identity to inbound gRPC calls before service authorization runs.
-func UnaryServerInterceptor(resolve iam.GRPCAuthenticatedIdentityResolver) grpc.UnaryServerInterceptor {
-	return iam.UnaryServerInterceptor(resolve)
+// UnaryServerInterceptor returns the upstream IAM v3 interceptor that restores
+// the caller identity from incoming gRPC metadata into handler context.
+func UnaryServerInterceptor() grpc.UnaryServerInterceptor {
+	return iam.UnaryInterceptor
 }
 
 // RegisterHTTP mounts the scheduler HTTP surfaces on a method-aware mux.

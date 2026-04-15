@@ -15,9 +15,9 @@ import (
 	"go.alis.build/alog"
 	pb "go.alis.build/common/alis/a2a/extension/scheduler/v1"
 	"go.alis.build/iam/v3"
-	iamedge "go.alis.build/iam/v3/edge"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -37,8 +37,8 @@ type response struct {
 
 // Config configures how the cron handler connects to the downstream agent.
 type Config struct {
-	AgentTarget           string
-	AuthenticatedIdentity *iam.Identity
+	AgentTarget string
+	Identity    *iam.Identity
 }
 
 // Option mutates a Config during handler construction.
@@ -51,11 +51,11 @@ func WithAgentTarget(target string) Option {
 	}
 }
 
-// WithAuthenticatedIdentity overrides the trusted authenticated service identity used when the
-// cron handler forwards requests to the downstream A2A agent.
+// WithAuthenticatedIdentity overrides the identity the cron handler uses for
+// local scheduler service calls.
 func WithAuthenticatedIdentity(id, email string) Option {
 	return func(cfg *Config) {
-		cfg.AuthenticatedIdentity = iam.NewIdentity(id, email)
+		cfg.Identity = newIdentity(id, email)
 	}
 }
 
@@ -70,14 +70,14 @@ func defaultAuthenticatedIdentity() *iam.Identity {
 		return nil
 	}
 	email := fmt.Sprintf("alis-build@%s.iam.gserviceaccount.com", projectID)
-	return iam.NewIdentity(email, email)
+	return newIdentity(email, email)
 }
 
 // newConfig builds a Config from the provided options and defaults.
 func newConfig(opts ...Option) *Config {
 	cfg := &Config{
-		AgentTarget:           DefaultAgentTarget,
-		AuthenticatedIdentity: defaultAuthenticatedIdentity(),
+		AgentTarget: DefaultAgentTarget,
+		Identity:    defaultAuthenticatedIdentity(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -99,7 +99,7 @@ func normalizeAgentTarget(target string) string {
 }
 
 // callAgent forwards the cron prompt to the configured A2A agent as the owner.
-func callAgent(ctx context.Context, target, prompt, contextID string, authenticated *iam.Identity, userID, email string) (string, error) {
+func callAgent(ctx context.Context, target, prompt, contextID string, userID, email string) (string, error) {
 	endpoints := []*a2a.AgentInterface{
 		{
 			URL:             normalizeAgentTarget(target),
@@ -117,19 +117,10 @@ func callAgent(ctx context.Context, target, prompt, contextID string, authentica
 		return "", err
 	}
 
-	if authenticated == nil {
-		return "", fmt.Errorf("authenticated service identity is required; use handler.WithAuthenticatedIdentity or set ALIS_OS_PROJECT")
-	}
-	caller := iam.NewIdentity(userID, email)
-	headers := http.Header{}
-	if err := iamedge.PrepareForwardedHeaders(headers, authenticated, caller); err != nil {
-		return "", err
-	}
+	caller := newIdentity(userID, email)
+	ctx = caller.OutgoingMetadata(ctx)
 	serviceParams := a2aclient.ServiceParams{
 		a2a.SvcParamExtensions: {HistoryExtensionURI},
-	}
-	for key, values := range headers {
-		serviceParams[key] = append([]string(nil), values...)
 	}
 	ctx = a2aclient.AttachServiceParams(ctx, serviceParams)
 
@@ -183,12 +174,37 @@ func mergeContextID(existing, returned string) string {
 	return existing
 }
 
+func newIdentity(id, email string) *iam.Identity {
+	identity := &iam.Identity{
+		ID:    id,
+		Email: email,
+		Type:  iam.User,
+	}
+	if strings.HasSuffix(email, ".iam.gserviceaccount.com") {
+		identity.Type = iam.ServiceAccount
+	}
+	return identity
+}
+
+func contextWithHTTPRequest(ctx context.Context, req *http.Request) context.Context {
+	md := metadata.MD{}
+	for k, vs := range req.Header {
+		md[strings.ToLower(k)] = append([]string(nil), vs...)
+	}
+	return metadata.NewIncomingContext(ctx, md)
+}
+
 // NewCronHandler returns an HTTP handler that executes a stored cron prompt.
 func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.HandlerFunc {
 	cfg := newConfig(opts...)
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := iam.ContextWithHTTPRequest(r.Context(), r)
+		ctx := contextWithHTTPRequest(r.Context(), r)
+		if cfg.Identity == nil {
+			handleError(ctx, w, "scheduler identity is required; use handler.WithAuthenticatedIdentity or set ALIS_OS_PROJECT")
+			return
+		}
+		ctx = cfg.Identity.Context(ctx)
 
 		// The request body is expected to contain a single cron-id string parameter.
 		var body struct {
@@ -233,7 +249,6 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 					cfg.AgentTarget,
 					cron.GetInitialPrompt(),
 					"",
-					cfg.AuthenticatedIdentity,
 					ownerID,
 					cron.GetEmail(),
 				)
@@ -270,7 +285,6 @@ func NewCronHandler(service pb.SchedulerServiceServer, opts ...Option) http.Hand
 				cfg.AgentTarget,
 				cron.GetPrompt(),
 				contextID,
-				cfg.AuthenticatedIdentity,
 				ownerID,
 				cron.GetEmail(),
 			)
