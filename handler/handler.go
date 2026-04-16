@@ -118,7 +118,7 @@ func callAgent(ctx context.Context, target, prompt, contextID string, userID, em
 	}
 
 	caller := newIdentity(userID, email)
-	// ctx = caller.OutgoingMetadata(ctx)
+	ctx = caller.OutgoingMetadata(ctx)
 	ctx = caller.Context(ctx)
 	serviceParams := a2aclient.ServiceParams{
 		a2a.SvcParamExtensions: {HistoryExtensionURI},
