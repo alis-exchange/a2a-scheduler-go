@@ -108,6 +108,13 @@ func callAgent(ctx context.Context, target, prompt, contextID string, userID, em
 		},
 	}
 
+	// Since this hit is made by the System (service account), we'll manually set the underlying Identity
+	// so that the hit to the agent is made on behalf of the user / identity.
+	caller := newIdentity(userID, email)
+	ctx = caller.OutgoingMetadata(ctx)
+	ctx = caller.Context(ctx)
+
+	// Since our enpoint supports gRPC, we'll connect via gRPC and attach the relevant identity headers further below.
 	client, err := a2aclient.NewFromEndpoints(
 		ctx,
 		endpoints,
@@ -117,9 +124,6 @@ func callAgent(ctx context.Context, target, prompt, contextID string, userID, em
 		return "", err
 	}
 
-	caller := newIdentity(userID, email)
-	ctx = caller.OutgoingMetadata(ctx)
-	ctx = caller.Context(ctx)
 	serviceParams := a2aclient.ServiceParams{
 		a2a.SvcParamExtensions: {HistoryExtensionURI},
 	}
