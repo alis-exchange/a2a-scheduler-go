@@ -126,6 +126,7 @@ func callAgent(ctx context.Context, target, prompt, contextID string, userID, em
 
 	serviceParams := a2aclient.ServiceParams{
 		a2a.SvcParamExtensions: {HistoryExtensionURI},
+		"x-alis-identity":      {string(caller.Marshal())},
 	}
 	ctx = a2aclient.AttachServiceParams(ctx, serviceParams)
 
